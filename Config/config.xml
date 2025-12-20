@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<config>
+    <!-- 大容量ファイル警告の閾値（MB） -->
+    <large_file_warning_threshold_mb>20</large_file_warning_threshold_mb>
+    
+    <!-- 1ファイルあたりの最大マッチ数 -->
+    <search_max_matches_per_file>50</search_max_matches_per_file>
+    
+    <!-- ログファイルの最大行数 -->
+    <logs_max_lines_per_file>1000</logs_max_lines_per_file>
+    
+    <!-- ログレベル: Debug / Information / Warning / Critical -->
+    <logging_level>Information</logging_level>
+    
+    <!-- 対象拡張子 -->
+    <target_extensions>
+        <ext>pptx</ext>
+        <ext>xlsx</ext>
+        <ext>docx</ext>
+        <ext>pdf</ext>
+        <ext>md</ext>
+        <ext>txt</ext>
+        <ext>log</ext>
+    </target_extensions>
+    
+    <!-- 検索のデフォルト設定 -->
+    <search_defaults>
+        <case_sensitive>false</case_sensitive>
+        <use_regex>false</use_regex>
+        <match_whole>false</match_whole>
+        <include_subfolders>true</include_subfolders>
+    </search_defaults>
+    
+    <!-- 正規表現オプションのデフォルト -->
+    <regex_options>
+        <ignore_case>true</ignore_case>
+        <multiline>false</multiline>
+        <dot_matches_newline>false</dot_matches_newline>
+    </regex_options>
+</config>
