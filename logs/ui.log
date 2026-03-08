@@ -1,0 +1,6 @@
+{"timestamp": "2026-03-07T08:54:44.440103+00:00", "level": "Information", "feature": "ui", "event": "app_started", "message": "Application started"}
+{"timestamp": "2026-03-07T08:57:07.090454+00:00", "level": "Information", "feature": "ui", "event": "search_started", "message": "Search started: 'A'", "folder": "C:/Users/javav/Downloads", "use_regex": false}
+{"timestamp": "2026-03-07T08:57:11.583928+00:00", "level": "Information", "feature": "ui", "event": "search_completed", "message": "Completed: 71 files, 2820 matches", "elapsed_ms": 4481}
+{"timestamp": "2026-03-07T08:58:35.895859+00:00", "level": "Information", "feature": "ui", "event": "search_started", "message": "Search started: 'A'", "folder": "C:/work/01_SPC/Unified-File-Search-Tool/docs", "use_regex": false}
+{"timestamp": "2026-03-07T08:58:35.942498+00:00", "level": "Information", "feature": "ui", "event": "search_completed", "message": "Completed: 4 files, 108 matches", "elapsed_ms": 36}
+{"timestamp": "2026-03-07T09:13:19.871106+00:00", "level": "Information", "feature": "ui", "event": "app_closed", "message": "Application closed"}

@@ -1,49 +1,53 @@
-"""Unified File Search Tool - エントリーポイント"""
+"""Unified File Search Tool - エントリーポイント。
+
+アプリケーションの初期化、QApplication の設定、
+メインウィンドウの起動を行う。
+"""
 
 import sys
 from pathlib import Path
 
-# srcをパスに追加
+# src をパスに追加（パッケージを直接実行する場合の互換性確保）
 sys.path.insert(0, str(Path(__file__).parent))
 
-from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication
 
-from src.ui import MainWindow
 from src.common.config import get_config
 from src.common.logger import get_logger
+from src.ui import MainWindow
 
 
-def main():
-    """メイン関数"""
-    # 高DPI対応
+def main() -> int:
+    """アプリケーションのエントリーポイント。
+
+    高 DPI スケーリング設定、QApplication 生成、Fusion スタイルの適用、
+    メインウィンドウの表示、Qt イベントループの実行を順に行う。
+
+    Returns:
+        Qt イベントループの終了コード（正常終了は 0）。
+    """
+    # 高 DPI スケーリング設定
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
-    
-    # アプリケーション作成
+
     app = QApplication(sys.argv)
     app.setApplicationName("Unified File Search Tool")
     app.setApplicationVersion("1.0.0")
-    
-    # スタイル設定
     app.setStyle("Fusion")
-    
-    # 設定とロガーを初期化
-    config = get_config()
+
+    # 設定・ロガーを初期化
+    get_config()
     logger = get_logger("main")
-    
-    logger.info("application_starting")
-    
-    # メインウィンドウ作成
+    logger.info("application_starting", "Application starting")
+
     window = MainWindow()
     window.show()
-    
-    # イベントループ
+
     exit_code = app.exec()
-    
-    logger.info("application_exiting", exit_code=exit_code)
-    
+
+    logger.info("application_exiting", "Application exiting", exit_code=exit_code)
     return exit_code
 
 
