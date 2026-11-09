@@ -25,9 +25,9 @@ class ExtensionPopup(QFrame):
     
     # 定義済み拡張子（カテゴリ別）
     PRESET_EXTENSIONS = {
-        "Office": [".docx", ".xlsx", ".pptx"],
-        "PDF": [".pdf"],
-        "テキスト": [".txt", ".md", ".log"],
+        "Office": ["docx", "xlsx", "xlsm", "pptx"],
+        "PDF": ["pdf"],
+        "テキスト": ["txt", "md", "log"],
     }
     
     def __init__(self, parent: Optional[QWidget] = None):

@@ -1,8 +1,10 @@
 """ファイル一覧パネル"""
 
+from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QUrl
+from PySide6.QtGui import QAction, QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -15,19 +17,30 @@ from PySide6.QtWidgets import (
     QMenu,
     QApplication,
 )
-from PySide6.QtGui import QAction, QColor
+
+from src.search import SearchResult
+
+COL_NAME, COL_COUNT, COL_LOCATION, COL_FOLDER = range(4)
+
+
+class _NumericItem(QTableWidgetItem):
+    """数値として並べ替えるセル"""
+    
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        return (self.data(Qt.ItemDataRole.UserRole) or 0) < (other.data(Qt.ItemDataRole.UserRole) or 0)
 
 
 class FileListPanel(QWidget):
-    """ファイル一覧パネル"""
+    """ファイル一覧パネル（検索結果）"""
     
     # シグナル
-    file_selected = Signal(str, int)  # ファイルパス, マッチインデックス
+    file_selected = Signal(object)  # SearchResult
     
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
+        self._results: list[SearchResult] = []
+        self._total_matches = 0
         self._setup_ui()
-        self._results: list[dict] = []
     
     def _setup_ui(self):
         """UIを構築"""
@@ -35,43 +48,39 @@ class FileListPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
         
-        # ヘッダー
         header_layout = QHBoxLayout()
-        
         self._count_label = QLabel("検索結果: 0件")
         header_layout.addWidget(self._count_label)
-        
         header_layout.addStretch()
-        
         self._status_label = QLabel("")
         header_layout.addWidget(self._status_label)
-        
         layout.addLayout(header_layout)
         
-        # テーブル
         self._table = QTableWidget()
         self._table.setColumnCount(4)
-        self._table.setHorizontalHeaderLabels(["ファイル名", "パス", "マッチ数", "位置"])
+        self._table.setHorizontalHeaderLabels(["ファイル名", "件数", "最初のマッチ", "フォルダ"])
+        self._table.verticalHeader().setVisible(False)
+        self._table.verticalHeader().setDefaultSectionSize(24)
+        self._table.setAlternatingRowColors(True)
+        self._table.setSortingEnabled(True)
+        self._table.setWordWrap(False)
         
-        # ヘッダー設定
         header = self._table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(COL_COUNT, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(COL_LOCATION, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(COL_FOLDER, QHeaderView.ResizeMode.Stretch)
+        self._table.setColumnWidth(COL_NAME, 200)
+        self._table.setColumnWidth(COL_LOCATION, 150)
         
-        # 選択設定
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         
-        # コンテキストメニュー
         self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._show_context_menu)
-        
-        # シグナル接続
         self._table.itemSelectionChanged.connect(self._on_selection_changed)
-        self._table.itemDoubleClicked.connect(self._on_item_double_clicked)
+        self._table.itemDoubleClicked.connect(lambda item: self._open_file(self._result_at(item.row())))
         
         layout.addWidget(self._table)
     
@@ -79,125 +88,124 @@ class FileListPanel(QWidget):
         """結果をクリア"""
         self._table.setRowCount(0)
         self._results.clear()
+        self._total_matches = 0
         self._count_label.setText("検索結果: 0件")
         self._status_label.setText("")
     
-    def set_results(self, results: list[dict]):
-        """検索結果を設定
+    def add_result(self, result: SearchResult):
+        """検索結果を1ファイル分追加（検索中に逐次呼ばれる）"""
+        index = len(self._results)
+        self._results.append(result)
+        self._total_matches += result.match_count
         
-        Args:
-            results: [
-                {
-                    "file_path": str,
-                    "file_name": str,
-                    "match_count": int,
-                    "matches": [
-                        {"location": str, "text": str, ...}
-                    ],
-                }
-            ]
-        """
-        self._results = results
-        self._table.setRowCount(len(results))
+        # 追加中に並べ替えが走ると行がずれるため一時的に止める
+        self._table.setSortingEnabled(False)
+        row = self._table.rowCount()
+        self._table.insertRow(row)
         
-        for row, result in enumerate(results):
-            # ファイル名
-            name_item = QTableWidgetItem(result["file_name"])
-            name_item.setToolTip(result["file_path"])
-            self._table.setItem(row, 0, name_item)
-            
-            # パス
-            path_item = QTableWidgetItem(result["file_path"])
-            self._table.setItem(row, 1, path_item)
-            
-            # マッチ数
-            count_item = QTableWidgetItem(str(result["match_count"]))
-            count_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._table.setItem(row, 2, count_item)
-            
-            # 位置（最初のマッチ）
-            if result["matches"]:
-                location = result["matches"][0].get("location", "")
-                location_item = QTableWidgetItem(location)
-            else:
-                location_item = QTableWidgetItem("")
-            self._table.setItem(row, 3, location_item)
+        info = result.file_info
+        name_item = QTableWidgetItem(info.name)
+        name_item.setData(Qt.ItemDataRole.UserRole, index)
+        name_item.setToolTip(str(info.path))
+        self._table.setItem(row, COL_NAME, name_item)
         
-        # 件数更新
-        total_matches = sum(r["match_count"] for r in results)
-        self._count_label.setText(f"検索結果: {len(results)}ファイル ({total_matches}件)")
+        count_item = _NumericItem(result.display_count if not result.error else "!")
+        count_item.setData(Qt.ItemDataRole.UserRole, result.match_count)
+        count_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._table.setItem(row, COL_COUNT, count_item)
+        
+        if result.error:
+            location_item = QTableWidgetItem(f"読み込みエラー: {result.error}")
+            location_item.setToolTip(result.error)
+            for item in (name_item, count_item, location_item):
+                item.setForeground(QColor("#b00020"))
+        else:
+            first = result.matches[0]
+            location_item = QTableWidgetItem(first.location)
+            location_item.setToolTip(first.snippet)
+        self._table.setItem(row, COL_LOCATION, location_item)
+        
+        folder_item = QTableWidgetItem(str(info.path.parent))
+        folder_item.setToolTip(str(info.path))
+        self._table.setItem(row, COL_FOLDER, folder_item)
+        
+        self._table.setSortingEnabled(True)
+        self._update_count()
+        
+        # 最初の結果は自動で選択してプレビューを出す
+        if index == 0 and not result.error:
+            self._table.selectRow(self._table.row(name_item))
+    
+    def _update_count(self):
+        files = sum(1 for r in self._results if not r.error)
+        errors = len(self._results) - files
+        text = f"検索結果: {files}ファイル（{self._total_matches}件）"
+        if errors:
+            text += f" / 読み込みエラー {errors}件"
+        self._count_label.setText(text)
     
     def set_status(self, text: str, is_warning: bool = False):
         """ステータスを設定"""
         self._status_label.setText(text)
-        if is_warning:
-            self._status_label.setStyleSheet("color: #ff6600;")
-        else:
-            self._status_label.setStyleSheet("")
+        self._status_label.setStyleSheet("color: #d35400;" if is_warning else "")
+    
+    def _result_at(self, row: int) -> Optional[SearchResult]:
+        item = self._table.item(row, COL_NAME)
+        if item is None:
+            return None
+        index = item.data(Qt.ItemDataRole.UserRole)
+        if index is None or not 0 <= index < len(self._results):
+            return None
+        return self._results[index]
     
     def _on_selection_changed(self):
         """選択変更"""
         rows = self._table.selectionModel().selectedRows()
-        if rows:
-            row = rows[0].row()
-            if 0 <= row < len(self._results):
-                result = self._results[row]
-                self.file_selected.emit(result["file_path"], 0)
-    
-    def _on_item_double_clicked(self, item: QTableWidgetItem):
-        """ダブルクリック"""
-        row = item.row()
-        if 0 <= row < len(self._results):
-            result = self._results[row]
-            # 外部アプリで開く（将来の拡張ポイント）
-            pass
+        if rows and (result := self._result_at(rows[0].row())):
+            self.file_selected.emit(result)
     
     def _show_context_menu(self, pos):
         """コンテキストメニューを表示"""
         item = self._table.itemAt(pos)
-        if not item:
+        result = self._result_at(item.row()) if item else None
+        if result is None:
             return
         
-        row = item.row()
-        if row < 0 or row >= len(self._results):
-            return
-        
-        result = self._results[row]
-        
+        path = result.file_info.path
         menu = QMenu(self)
         
-        # パスをコピー
-        copy_path_action = QAction("パスをコピー", self)
-        copy_path_action.triggered.connect(
-            lambda: self._copy_to_clipboard(result["file_path"])
-        )
-        menu.addAction(copy_path_action)
+        actions = [
+            ("ファイルを開く", lambda: self._open_file(result)),
+            ("フォルダを開く", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))),
+            (None, None),
+            ("パスをコピー", lambda: QApplication.clipboard().setText(str(path))),
+            ("ファイル名をコピー", lambda: QApplication.clipboard().setText(path.name)),
+        ]
+        for label, handler in actions:
+            if label is None:
+                menu.addSeparator()
+                continue
+            action = QAction(label, self)
+            action.triggered.connect(handler)
+            menu.addAction(action)
         
-        # ファイル名をコピー
-        copy_name_action = QAction("ファイル名をコピー", self)
-        copy_name_action.triggered.connect(
-            lambda: self._copy_to_clipboard(result["file_name"])
-        )
-        menu.addAction(copy_name_action)
-        
-        menu.exec(self._table.mapToGlobal(pos))
+        menu.exec(self._table.viewport().mapToGlobal(pos))
     
-    def _copy_to_clipboard(self, text: str):
-        """クリップボードにコピー"""
-        clipboard = QApplication.clipboard()
-        clipboard.setText(text)
+    @staticmethod
+    def _open_file(result: Optional[SearchResult]):
+        """OS既定のアプリで開く"""
+        if result is not None:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(result.file_info.path)))
     
-    def get_selected_file(self) -> Optional[str]:
-        """選択中のファイルパスを取得"""
+    def get_selected_result(self) -> Optional[SearchResult]:
+        """選択中の結果を取得"""
         rows = self._table.selectionModel().selectedRows()
-        if rows:
-            row = rows[0].row()
-            if 0 <= row < len(self._results):
-                return self._results[row]["file_path"]
-        return None
+        return self._result_at(rows[0].row()) if rows else None
     
-    def get_result_at(self, row: int) -> Optional[dict]:
-        """指定行の結果を取得"""
-        if 0 <= row < len(self._results):
-            return self._results[row]
-        return None
+    def get_selected_file(self) -> Optional[Path]:
+        """選択中のファイルパスを取得"""
+        result = self.get_selected_result()
+        return result.file_info.path if result else None
+    
+    def result_count(self) -> int:
+        return len(self._results)

@@ -49,11 +49,12 @@ class Logger:
         min_level: LogLevel = LogLevel.INFORMATION,
     ):
         self.feature = feature
-        self.log_file = logs_path / f"{feature}.log"
+        self.log_file = logs_path / f"{feature}.jsonl"
         self.max_lines = max_lines
         self.min_level = min_level
         self._lock = Lock()
         self._correlation_id: Optional[str] = None
+        self._line_count: Optional[int] = None
         
         # ログフォルダが存在しない場合は作成
         logs_path.mkdir(parents=True, exist_ok=True)
@@ -100,41 +101,56 @@ class Logger:
             log_entry["elapsed_ms"] = elapsed_ms
         
         if extra:
+            # extra={"k": v} 形式とキーワード引数形式のどちらも受け付ける
+            nested = extra.pop("extra", None)
+            if isinstance(nested, dict):
+                log_entry.update(nested)
             log_entry.update(extra)
         
-        log_line = json.dumps(log_entry, ensure_ascii=False)
+        log_line = json.dumps(log_entry, ensure_ascii=False, default=str)
         
         with self._lock:
             self._append_with_rotation(log_line)
     
     def _append_with_rotation(self, log_line: str) -> None:
-        """FIFO方式でログを追加（1000行上限）"""
+        """ログを追記し、上限を大きく超えたときだけ古い行を切り詰める
+
+        1行ごとにファイル全体を書き直すと件数に比例して遅くなるため、
+        通常は追記のみ行い、上限の1.5倍に達した時点でまとめて整理する。
+        """
         try:
-            # 既存のログを読み込み
-            lines: deque[str] = deque(maxlen=self.max_lines)
-            if self.log_file.exists():
-                with open(self.log_file, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line:
-                            lines.append(line)
+            if self._line_count is None:
+                self._line_count = self._count_lines()
             
-            # 新しいログを追加
-            lines.append(log_line)
+            with open(self.log_file, "a", encoding="utf-8") as f:
+                f.write(log_line + "\n")
+            self._line_count += 1
             
-            # 書き込み
-            with open(self.log_file, "w", encoding="utf-8") as f:
-                for line in lines:
-                    f.write(line + "\n")
+            if self._line_count > self.max_lines * 1.5:
+                self._trim()
         
         except (IOError, OSError) as e:
             # ログ書き込み失敗は無視（UIを固めない）
             print(f"Warning: Failed to write log: {e}")
     
+    def _count_lines(self) -> int:
+        if not self.log_file.exists():
+            return 0
+        with open(self.log_file, "rb") as f:
+            return sum(chunk.count(b"\n") for chunk in iter(lambda: f.read(1 << 16), b""))
+    
+    def _trim(self) -> None:
+        """直近 max_lines 行だけを残す"""
+        with open(self.log_file, "r", encoding="utf-8", errors="replace") as f:
+            lines = deque(f, maxlen=self.max_lines)
+        with open(self.log_file, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+        self._line_count = len(lines)
+    
     def debug(
         self,
         event: str,
-        message: str,
+        message: str = "",
         file_path: Optional[str] = None,
         elapsed_ms: Optional[int] = None,
         **extra,
@@ -145,7 +161,7 @@ class Logger:
     def info(
         self,
         event: str,
-        message: str,
+        message: str = "",
         file_path: Optional[str] = None,
         elapsed_ms: Optional[int] = None,
         **extra,
@@ -156,7 +172,7 @@ class Logger:
     def warning(
         self,
         event: str,
-        message: str,
+        message: str = "",
         file_path: Optional[str] = None,
         elapsed_ms: Optional[int] = None,
         **extra,
@@ -167,7 +183,7 @@ class Logger:
     def critical(
         self,
         event: str,
-        message: str,
+        message: str = "",
         file_path: Optional[str] = None,
         elapsed_ms: Optional[int] = None,
         **extra,

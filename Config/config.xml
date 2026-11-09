@@ -12,10 +12,35 @@
     <!-- ログレベル: Debug / Information / Warning / Critical -->
     <logging_level>Information</logging_level>
     
+    <!-- 検索の並列数（0 = CPU数から自動、1 = 並列化しない） -->
+    <search_workers>0</search_workers>
+    
+    <!-- 抽出結果キャッシュ（同じフォルダの2回目以降の検索を高速化） -->
+    <extraction_cache_enabled>true</extraction_cache_enabled>
+    
+    <!-- キャッシュ（抽出結果・変換済みPDF）それぞれの上限（MB） -->
+    <cache_max_size_mb>500</cache_max_size_mb>
+    
+    <!-- Officeファイルの原本表示に使う変換エンジン
+         auto: Microsoft Office → LibreOffice の順に自動選択
+         msoffice / libreoffice: 指定したものだけを使う
+         none: 変換しない（常にテキスト表示） -->
+    <office_converter>auto</office_converter>
+    
+    <!-- LibreOffice（soffice）の場所。空なら自動検出 -->
+    <libreoffice_path></libreoffice_path>
+    
+    <!-- 原本表示用の変換を打ち切るまでの秒数 -->
+    <preview_conversion_timeout_sec>120</preview_conversion_timeout_sec>
+    
+    <!-- プレビューで強調表示するマッチ箇所の上限 -->
+    <preview_max_hits>1000</preview_max_hits>
+    
     <!-- 対象拡張子 -->
     <target_extensions>
         <ext>pptx</ext>
         <ext>xlsx</ext>
+        <ext>xlsm</ext>
         <ext>docx</ext>
         <ext>pdf</ext>
         <ext>md</ext>

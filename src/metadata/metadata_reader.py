@@ -116,7 +116,7 @@ class MetadataReader:
     
     def _read_pdf(self, file_path: Path) -> FileMetadata:
         """PDFファイルのメタデータを読み取る"""
-        import fitz  # PyMuPDF
+        import pymupdf as fitz
         
         doc = fitz.open(file_path)
         meta = doc.metadata
