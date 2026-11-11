@@ -85,6 +85,7 @@ def build_preview(
                 )
                 preview.html, preview.hits = renderer.render_pages(document, hits, tile_url_prefix)
                 preview.mode = "page"
+                preview.sections = list(document.labels)
                 preview.page_document = document
                 preview.truncated = truncated
                 return preview
@@ -99,6 +100,7 @@ def build_preview(
         content, query, config.preview_max_hits
     )
     preview.mode = "text"
+    preview.sections = renderer.last_sections
     return preview
 
 

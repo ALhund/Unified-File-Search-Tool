@@ -195,3 +195,17 @@ def test_parallel_extraction_matches_serial(sample_dir, isolated_config):
     assert {n: r.match_count for n, r in parallel_results.items()} == {
         n: r.match_count for n, r in serial_results.items()
     }
+
+
+def test_unlimited_matches():
+    matches, truncated = find(content_of("a" * 300), max_matches=0, query="a")
+    assert len(matches) == 300 and not truncated
+
+
+def test_search_files_respects_explicit_limit(sample_dir):
+    files = FileEnumerator().enumerate(sample_dir).files
+    results = []
+    Searcher().search_files(files, SearchOptions(query="バナナ"), max_matches=1, result_callback=results.append)
+    by_name = {r.file_info.name: r for r in results}
+    assert by_name["sample.xlsx"].match_count == 1 and by_name["sample.xlsx"].truncated
+    assert by_name["sample.xlsx"].display_count == "1+"

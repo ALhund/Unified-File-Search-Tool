@@ -3,8 +3,8 @@
     <!-- 大容量ファイル警告の閾値（MB） -->
     <large_file_warning_threshold_mb>20</large_file_warning_threshold_mb>
     
-    <!-- 1ファイルあたりの最大マッチ数 -->
-    <search_max_matches_per_file>50</search_max_matches_per_file>
+    <!-- 1ファイルあたりの最大マッチ数（0 = 無制限）。画面の「詳細条件」でも変更できます -->
+    <search_max_matches_per_file>1000</search_max_matches_per_file>
     
     <!-- ログファイルの最大行数 -->
     <logs_max_lines_per_file>1000</logs_max_lines_per_file>

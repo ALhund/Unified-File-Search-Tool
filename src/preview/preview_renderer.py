@@ -35,115 +35,137 @@ class RenderedPreview:
     note: str = ""  # 利用者への補足（変換できなかった理由など）
     info: str = ""  # ファイル情報（作成者など）
     page_mode_available: bool = False
+    sections: list[str] = field(default_factory=list)  # ページ/シート/スライドの見出し（ジャンプ用）
 
 
 _COMMON_STYLE = """
-:root { color-scheme: light; }
+:root {
+    color-scheme: light;
+    --bg: #E4E6EA; --surface: #FFFFFF; --surface-alt: #F7F8FA; --border: #E2E4E8;
+    --text: #1A1C20; --text-2: #5B616B; --text-3: #8B919A;
+    --mark: #FFE34D; --mark-border: #E8B400; --current: #FF9F1C; --current-ring: #E8590C;
+    --label: #4A505A; --count-bg: #FFE34D; --count-text: #3A2A00; --shadow: rgba(0,0,0,0.16);
+    --header: #F1F3F5;
+}
+html.dark {
+    color-scheme: dark;
+    --bg: #151517; --surface: #232326; --surface-alt: #2A2A2E; --border: #38383D;
+    --text: #EDEDF0; --text-2: #B0B3BA; --text-3: #80848C;
+    --mark: #F5C518; --mark-border: #B58E00; --label: #B0B3BA; --shadow: rgba(0,0,0,0.6);
+    --header: #2C2C30;
+}
 * { box-sizing: border-box; }
 html { scroll-padding: 80px; }
 body {
     margin: 0;
-    font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo', 'Hiragino Sans', 'Noto Sans CJK JP', sans-serif;
+    font-family: 'Segoe UI Variable Text', 'Segoe UI', 'Yu Gothic UI', 'Meiryo', 'Hiragino Sans', 'Noto Sans CJK JP', sans-serif;
     font-size: 14px;
     line-height: 1.6;
-    color: #222;
+    color: var(--text);
+    background: var(--bg);
 }
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(128,128,140,0.45); border-radius: 6px; border: 3px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background-color: rgba(128,128,140,0.7); }
+::-webkit-scrollbar-corner { background: transparent; }
 @keyframes hit-pulse {
-    0% { box-shadow: 0 0 0 0 rgba(255, 87, 34, 0.9); }
-    100% { box-shadow: 0 0 0 14px rgba(255, 87, 34, 0); }
+    0% { box-shadow: 0 0 0 0 rgba(255, 120, 30, 0.85); }
+    100% { box-shadow: 0 0 0 16px rgba(255, 120, 30, 0); }
 }
-.empty { color: #888; padding: 32px; text-align: center; }
+.empty { color: var(--text-3); padding: 32px; text-align: center; }
 """
 
 _PAGE_STYLE = """
-body { background: #5a5e63; padding: 12px 16px 48px; }
+body { padding: 8px 20px 56px; }
 .page-label {
-    color: #e8eaed; font-size: 12px; margin: 14px auto 4px;
-    display: flex; align-items: center; gap: 8px;
+    color: var(--label); font-size: 12px; margin: 16px auto 6px;
+    display: flex; align-items: center; gap: 8px; font-weight: 600;
 }
 .page-label .count {
-    background: #ffca28; color: #3a2a00; border-radius: 9px;
-    padding: 0 8px; font-weight: 600;
+    background: var(--count-bg); color: var(--count-text); border-radius: 10px;
+    padding: 0 8px; font-weight: 700; font-size: 11px;
 }
 .page {
     position: relative; margin: 0 auto; background: #fff;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+    box-shadow: 0 1px 2px var(--shadow), 0 6px 22px var(--shadow); border-radius: 2px;
 }
 .page img { position: absolute; display: block; user-select: none; }
 .hit {
-    position: absolute; background: rgba(255, 235, 59, 0.55);
+    position: absolute; background: rgba(255, 227, 77, 0.55);
     mix-blend-mode: multiply; border-radius: 2px; cursor: pointer;
-    outline: 1px solid rgba(245, 180, 0, 0.9);
+    outline: 1.5px solid rgba(232, 180, 0, 0.95);
 }
 .hit.current {
-    background: rgba(255, 152, 0, 0.6); outline: 2px solid #e64a19;
-    animation: hit-pulse 0.9s ease-out 2; mix-blend-mode: multiply; z-index: 2;
+    background: rgba(255, 159, 28, 0.6); outline: 2.5px solid var(--current-ring);
+    animation: hit-pulse 0.9s ease-out 2; z-index: 2;
 }
 """
 
 _TEXT_STYLE = """
-body { background: #f3f4f6; padding: 16px 20px 48px; }
+body { padding: 16px 20px 56px; }
 mark.hit {
-    background: #ffeb3b; color: inherit; border-radius: 2px;
-    padding: 1px 0; box-shadow: 0 0 0 1px #f5b400; cursor: pointer;
+    background: var(--mark); color: #1A1C20; border-radius: 3px;
+    padding: 1px 1px; box-shadow: 0 0 0 1px var(--mark-border); cursor: pointer;
 }
 mark.hit.current {
-    background: #ff9800; box-shadow: 0 0 0 2px #e64a19;
+    background: var(--current); box-shadow: 0 0 0 2px var(--current-ring);
     animation: hit-pulse 0.9s ease-out 2;
 }
 .section {
-    background: #fff; border: 1px solid #d9dce1; border-radius: 6px;
-    margin: 0 0 16px; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08); overflow: hidden;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    margin: 0 0 16px; box-shadow: 0 1px 3px var(--shadow); overflow: hidden;
 }
 .section > .title {
-    padding: 6px 12px; font-weight: 600; font-size: 13px; color: #fff;
+    padding: 7px 14px; font-weight: 600; font-size: 13px; color: #fff;
     display: flex; gap: 8px; align-items: center;
 }
 .section > .body { padding: 12px 16px; overflow-x: auto; }
-.section.page > .title { background: #1976d2; }
-.section.sheet > .title { background: #217346; }
-.section.slide > .title { background: #c55a11; }
-.section.doc > .title { background: #2b579a; }
+.section.page > .title { background: #3B6FD8; }
+.section.sheet > .title { background: #1F7A4A; }
+.section.slide > .title { background: #C2511F; }
+.section.doc > .title { background: #2B5FB4; }
 .title .count {
-    background: #ffeb3b; color: #3a2a00; border-radius: 9px;
-    padding: 0 8px; font-size: 12px;
+    background: var(--count-bg); color: var(--count-text); border-radius: 10px;
+    padding: 0 8px; font-size: 11px; font-weight: 700;
 }
 p.block { margin: 0 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
 p.block.heading { font-size: 17px; font-weight: 700; margin-top: 12px; }
 .box {
-    border: 1px dashed #9aa5b1; border-radius: 4px; background: #fafbfc;
+    border: 1px dashed var(--text-3); border-radius: 6px; background: var(--surface-alt);
     padding: 6px 10px; margin: 0 0 8px; white-space: pre-wrap; overflow-wrap: anywhere;
 }
 .box > .tag {
-    display: inline-block; font-size: 11px; color: #fff; background: #78909c;
-    border-radius: 3px; padding: 0 6px; margin-right: 8px; vertical-align: 1px;
+    display: inline-block; font-size: 11px; color: #fff; background: #6B7480;
+    border-radius: 4px; padding: 0 6px; margin-right: 8px; vertical-align: 1px;
 }
 table.grid { border-collapse: collapse; font-size: 13px; margin: 0 0 8px; }
 table.grid td, table.grid th {
-    border: 1px solid #d0d4d9; padding: 2px 8px; vertical-align: top;
+    border: 1px solid var(--border); padding: 2px 8px; vertical-align: top;
     white-space: pre-wrap; max-width: 420px; overflow-wrap: anywhere; min-width: 48px;
 }
 table.grid th {
-    background: #eef0f3; color: #555; font-weight: 500; text-align: center;
+    background: var(--header); color: var(--text-2); font-weight: 500; text-align: center;
     min-width: 36px; position: sticky; top: 0;
 }
 table.grid th.row { position: sticky; left: 0; }
-table.grid tr.gap td { border: none; color: #999; text-align: center; padding: 0; }
-.code { display: flex; align-items: flex-start; font-family: Consolas, 'MS Gothic', 'Noto Sans Mono CJK JP', monospace; font-size: 13px; line-height: 1.5; }
+table.grid tr.gap td { border: none; color: var(--text-3); text-align: center; padding: 0; }
+.code { display: flex; align-items: flex-start; font-family: 'Cascadia Mono', Consolas, 'BIZ UDGothic', 'MS Gothic', 'Noto Sans Mono CJK JP', monospace; font-size: 13px; line-height: 1.55; }
 .code pre { margin: 0; font: inherit; white-space: pre; tab-size: 4; }
 .code .gutter {
-    position: sticky; left: 0; text-align: right; color: #9aa0a6; background: #f6f7f9;
-    padding: 8px 10px; border-right: 1px solid #e0e3e7; user-select: none;
+    position: sticky; left: 0; text-align: right; color: var(--text-3); background: var(--surface-alt);
+    padding: 8px 10px; border-right: 1px solid var(--border); user-select: none;
 }
 .code .text { padding: 8px 12px; }
 .section.code-section > .body { padding: 0; }
 .encoding {
-    position: fixed; right: 10px; bottom: 8px; background: rgba(0, 0, 0, 0.65);
-    color: #fff; border-radius: 4px; padding: 2px 8px; font-size: 12px;
+    position: fixed; right: 12px; bottom: 10px; background: rgba(0, 0, 0, 0.65);
+    color: #fff; border-radius: 6px; padding: 2px 9px; font-size: 12px;
 }
 """
 
 _SCRIPT = """
+function notify(kind, value) { document.title = kind + ':' + value + ':' + Date.now(); }
 function gotoHit(index, smooth) {
     document.querySelectorAll('.hit.current').forEach(function (e) { e.classList.remove('current'); });
     var parts = document.querySelectorAll('.hit[data-hit="' + index + '"]');
@@ -152,21 +174,37 @@ function gotoHit(index, smooth) {
     parts[0].scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'center', inline: 'center' });
     return true;
 }
+function gotoSection(index) {
+    var target = document.querySelector('[data-section="' + index + '"]');
+    if (target) { target.scrollIntoView({ behavior: 'auto', block: 'start' }); }
+}
 function contentWidth() {
     var width = 0;
     document.querySelectorAll('.page').forEach(function (e) { width = Math.max(width, e.offsetWidth); });
     return width;
 }
+function setDark(dark) { document.documentElement.classList.toggle('dark', !!dark); }
 document.addEventListener('click', function (event) {
     var hit = event.target.closest('.hit');
-    if (hit) { document.title = 'hit:' + hit.dataset.hit + ':' + Date.now(); }
+    if (hit) { notify('hit', hit.dataset.hit); }
 });
+(function () {
+    var current = -1, ticking = false;
+    function update() {
+        ticking = false;
+        var sections = document.querySelectorAll('[data-section]');
+        var best = 0, line = window.innerHeight * 0.35;
+        for (var i = 0; i < sections.length; i++) {
+            if (sections[i].getBoundingClientRect().top <= line) { best = i; } else { break; }
+        }
+        if (sections.length && best !== current) { current = best; notify('sec', sections[best].dataset.section); }
+    }
+    window.addEventListener('scroll', function () {
+        if (!ticking) { ticking = true; window.requestAnimationFrame(update); }
+    }, { passive: true });
+    window.addEventListener('load', update);
+})();
 """
-
-_CELL_RE = re.compile(r"^([A-Z]+)(\d+)$")
-MAX_GRID_ROWS = 2000
-MAX_GRID_COLS = 100
-MAX_TEXT_LINES = 200_000
 
 
 def _document(style: str, body: str) -> str:
@@ -175,6 +213,14 @@ def _document(style: str, body: str) -> str:
         f"<style>{_COMMON_STYLE}{style}</style></head>\n<body>\n{body}\n"
         f"<script>{_SCRIPT}</script></body></html>"
     )
+
+
+_CELL_RE = re.compile(r"^([A-Z]+)(\d+)$")
+MAX_GRID_ROWS = 2000
+MAX_GRID_COLS = 100
+MAX_TEXT_LINES = 200_000
+
+
 
 
 def _snippet(before: str, text: str, after: str) -> str:
@@ -198,6 +244,10 @@ def _column_letters(index: int) -> str:
 
 class PreviewRenderer:
     """プレビューレンダラー"""
+    
+    def __init__(self):
+        # 直前に描画したテキスト表示のセクション見出し（ジャンプ用）
+        self.last_sections: list[str] = []
     
     # ------------------------------------------------------------------
     # 原本表示（ページ画像 + マッチ箇所の重ね合わせ）
@@ -228,7 +278,7 @@ class PreviewRenderer:
             
             count = f"<span class='count'>{len(page_hits)}件</span>" if page_hits else ""
             parts.append(
-                f"<div class='page-label' style='width:{width:.1f}px'>"
+                f"<div class='page-label' data-section='{page_index}' style='width:{width:.1f}px'>"
                 f"{html.escape(document.labels[page_index])}{count}</div>"
             )
             parts.append(
@@ -282,6 +332,7 @@ class PreviewRenderer:
             (HTML, マッチ箇所, 上限で打ち切ったか)
         """
         state = _HitState(query, max_hits)
+        self.last_sections = []
         
         if content.total_lines is not None:
             body = self._render_plain_text(content, state)
@@ -308,7 +359,7 @@ class PreviewRenderer:
         if (content.total_lines or 0) > total:
             note = f"<div class='empty'>先頭 {total:,} 行のみ表示しています</div>"
         return (
-            "<div class='section doc code-section'>"
+            "<div class='section doc code-section' data-section='0'>"
             f"<div class='title'>{html.escape(content.file_path.name)}</div>"
             "<div class='body'><div class='code'>"
             f"<pre class='gutter'>{gutter}</pre><pre class='text'>{chr(10).join(lines)}</pre>"
@@ -338,7 +389,8 @@ class PreviewRenderer:
                     sections.append((key, title, [block]))
         
         parts: list[str] = []
-        for key, title, blocks in sections:
+        self.last_sections = [title for _, title, _ in sections]
+        for section_index, (key, title, blocks) in enumerate(sections):
             before = len(state.hits)
             if key == "sheet":
                 body = self._render_sheet(blocks, state, title)
@@ -347,7 +399,8 @@ class PreviewRenderer:
             found = len(state.hits) - before
             count = f"<span class='count'>{found}件</span>" if found else ""
             parts.append(
-                f"<div class='section {key}'><div class='title'>{html.escape(title)}{count}</div>"
+                f"<div class='section {key}' data-section='{section_index}'>"
+                f"<div class='title'>{html.escape(title)}{count}</div>"
                 f"<div class='body'>{body}</div></div>"
             )
         return "\n".join(parts)

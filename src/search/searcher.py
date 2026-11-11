@@ -65,9 +65,9 @@ class SearchResult:
     
     @property
     def display_count(self) -> str:
-        """表示用のカウント（上限超は '50>'）"""
+        """表示用のカウント（上限で打ち切った場合は '50+'）"""
         if self.truncated:
-            return f"{self.match_count}>"
+            return f"{self.match_count}+"
         return str(self.match_count)
 
 
@@ -90,12 +90,17 @@ def search_content(
 ) -> tuple[list[MatchInfo], bool]:
     """抽出済みコンテンツを検索する
     
+    Args:
+        max_matches: 1ファイルあたりの上限（0以下なら無制限）
+    
     Returns:
         (マッチ一覧, 上限で打ち切ったか)。AND検索で全ての語が揃わない場合は空。
     """
     matches: list[MatchInfo] = []
     seen_terms: set[int] = set()
     truncated = False
+    if max_matches <= 0:
+        max_matches = float("inf")
     
     for block_index, block in enumerate(content.blocks):
         # 上限到達後は、AND検索の残りの語が存在するかだけを確認する
@@ -214,6 +219,7 @@ class Searcher:
         self,
         files: list[FileInfo],
         options: SearchOptions,
+        max_matches: Optional[int] = None,
         result_callback: Optional[Callable[[SearchResult], None]] = None,
         progress_callback: Optional[Callable[[int, int, int, int], None]] = None,
     ) -> SearchSummary:
@@ -222,6 +228,7 @@ class Searcher:
         Args:
             files: 検索対象ファイル一覧
             options: 検索オプション（不正な場合は QueryError）
+            max_matches: 1ファイルあたりの上限（None なら設定値、0 なら無制限）
             result_callback: マッチ（またはエラー）のあったファイルごとに呼ばれる
             progress_callback: 進捗(処理済みbytes, 総bytes, 処理済み件数, 総件数)
         
@@ -230,7 +237,8 @@ class Searcher:
         """
         self._cancelled = False
         query = CompiledQuery(options)
-        max_matches = self._config.search_max_matches_per_file
+        if max_matches is None:
+            max_matches = self._config.search_max_matches_per_file
         cache = get_extraction_cache()
         
         summary = SearchSummary(total_files=len(files))

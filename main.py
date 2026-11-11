@@ -19,27 +19,45 @@ def main() -> int:
     from src.common.config import get_config
     from src.common.logger import get_logger
     from src.preview.scheme import register_scheme
+    from src.ui.platform import set_app_user_model_id
     
+    # タスクバーに python.exe ではなく本アプリのアイコンを出す
+    set_app_user_model_id()
     # プレビュー用URLスキームは QApplication より前に登録する必要がある
     register_scheme()
     
-    # 高DPI対応
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
     
     app = QApplication(sys.argv)
-    app.setApplicationName("Unified File Search Tool")
-    app.setApplicationVersion("0.2.0")
+    app.setApplicationName("Unified File Search")
+    app.setApplicationDisplayName("Unified File Search")
+    app.setOrganizationName("UnifiedFileSearchTool")
+    app.setApplicationVersion("0.3.0")
     app.setStyle("Fusion")
     
+    from src.ui import icons
+    from src.ui.settings import UserSettings, apply_to_config
+    from src.ui.theme import theme
+    
+    app.setWindowIcon(icons.app_icon())
+    
     get_config()
+    settings = UserSettings()
+    apply_to_config(settings)
+    
+    manager = theme()
+    manager.mode = settings.theme
+    manager.use_system_accent = settings.use_system_accent
+    manager.apply(app)
+    
     logger = get_logger("main")
     logger.info("application_starting", "Application starting")
     
     from src.ui import MainWindow
     
-    window = MainWindow()
+    window = MainWindow(settings)
     window.show()
     
     exit_code = app.exec()

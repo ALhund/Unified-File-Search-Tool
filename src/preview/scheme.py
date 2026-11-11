@@ -47,6 +47,7 @@ class PreviewStore:
         self._html: dict[str, bytes] = {}
         self._documents: dict[str, PageDocument] = {}
         self._tiles: OrderedDict[tuple[str, int, int], bytes] = OrderedDict()
+        self.dark = False  # ダークテーマで配信する
     
     def new_id(self) -> str:
         return f"d{next(self._ids)}"
@@ -71,7 +72,10 @@ class PreviewStore:
     
     def html(self, doc_id: str) -> Optional[bytes]:
         with self._lock:
-            return self._html.get(doc_id)
+            data = self._html.get(doc_id)
+        if data is not None and self.dark:
+            data = data.replace(b"<html lang='ja'>", b"<html lang='ja' class='dark'>", 1)
+        return data
     
     def tile(self, doc_id: str, page: int, tile: int) -> Optional[bytes]:
         key = (doc_id, page, tile)

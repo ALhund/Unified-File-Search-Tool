@@ -33,7 +33,7 @@ class Config:
     """アプリケーション設定"""
     
     large_file_warning_threshold_mb: int = 20
-    search_max_matches_per_file: int = 50
+    search_max_matches_per_file: int = 1000  # 0 = 無制限
     logs_max_lines_per_file: int = 1000
     logging_level: str = "Information"
     target_extensions: list[str] = field(default_factory=lambda: [
@@ -146,7 +146,7 @@ class Config:
                 config.large_file_warning_threshold_mb = int(elem.text or "20")
             
             if (elem := root.find("search_max_matches_per_file")) is not None:
-                config.search_max_matches_per_file = int(elem.text or "50")
+                config.search_max_matches_per_file = int(elem.text or "1000")
             
             if (elem := root.find("logs_max_lines_per_file")) is not None:
                 config.logs_max_lines_per_file = int(elem.text or "1000")
