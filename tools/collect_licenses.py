@@ -77,7 +77,17 @@ def license_of(dist: metadata.Distribution) -> str:
     return "; ".join(classifiers) or "（パッケージ内のライセンスファイルを参照）"
 
 
+def _utf8_console() -> None:
+    """日本語のメッセージを、文字コードの違うコンソールでも出せるようにする"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main() -> int:
+    _utf8_console()
     output = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "licenses"
     if output.exists():
         shutil.rmtree(output)

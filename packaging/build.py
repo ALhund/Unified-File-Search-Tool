@@ -55,7 +55,17 @@ VSVersionInfo(
     return path
 
 
+def _utf8_console() -> None:
+    """日本語のメッセージを、文字コードの違うコンソールでも出せるようにする"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main() -> int:
+    _utf8_console()
     shutil.rmtree(APP_FOLDER, ignore_errors=True)
     
     env = dict(**__import__("os").environ)
