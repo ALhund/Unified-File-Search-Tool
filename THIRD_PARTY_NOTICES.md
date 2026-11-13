@@ -11,7 +11,7 @@ Unified File Search は、以下のオープンソース ソフトウェアを�
 
 | ソフトウェア | 用途 | ライセンス |
 | --- | --- | --- |
-| [Qt for Python (PySide6 / shiboken6)](https://www.qt.io/qt-for-python) | 画面（Qt Widgets, Qt WebEngine, Qt Svg） | LGPL-3.0 |
+| [Qt for Python (PySide6 / shiboken6)](https://www.qt.io/qt-for-python) | 画面（Qt Widgets, Qt Svg） | LGPL-3.0 |
 | [pypdfium2](https://github.com/pypdfium2-team/pypdfium2) | PDFの表示・文字位置の取得 | Apache-2.0 / BSD-3-Clause |
 | [PDFium](https://pdfium.googlesource.com/pdfium/)（pypdfium2 に同梱） | PDFエンジン | BSD-3-Clause / Apache-2.0（同梱ライブラリ: FreeType は FTL を選択、libjpeg-turbo, OpenJPEG, LittleCMS, zlib, ICU など。詳細は pypdfium2 の `BUILD_LICENSES`） |
 | [python-docx](https://github.com/python-openxml/python-docx) | Word ファイルの読み取り | MIT |

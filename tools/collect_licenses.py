@@ -17,8 +17,6 @@ ROOT = Path(__file__).resolve().parents[1]
 # アプリが直接使うパッケージ
 ROOT_PACKAGES = [
     "PySide6-Essentials",
-    "PySide6-Addons",
-    "PySide6-WebEngine",
     "shiboken6",
     "python-pptx",
     "openpyxl",

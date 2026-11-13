@@ -1,17 +1,15 @@
 """プレビューパネル（画面右）"""
 
-import html
 from typing import Optional
 
-from PySide6.QtCore import QEvent, QObject, Qt, QUrl, Signal
-from PySide6.QtGui import QColor, QGuiApplication, QKeySequence, QShortcut
-from PySide6.QtWebEngineCore import QWebEnginePage
-from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
     QMenu,
+    QProgressBar,
     QStackedWidget,
     QToolButton,
     QVBoxLayout,
@@ -20,10 +18,9 @@ from PySide6.QtWidgets import (
 
 from src.enumeration import FileInfo
 from src.preview import RenderedPreview
-from src.preview.scheme import PreviewSchemeHandler, PreviewStore, SCHEME
 from src.ui import icons
 from src.ui.platform import file_manager_name, open_file, reveal_in_explorer
-from src.ui.theme import palette, theme
+from src.ui.theme import theme
 from src.ui.widgets.common import (
     ElidedLabel,
     EmptyState,
@@ -34,21 +31,41 @@ from src.ui.widgets.common import (
     ghost_button,
     label,
 )
+from src.ui.widgets.page_view import PageView
+from src.ui.widgets.text_views import PlainTextView, RichTextView
 
 ZOOM_STEPS = [25, 33, 50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300]
 MIN_AUTO_FIT = 50
 MAX_MENU_HITS = 300
 
-_MESSAGE_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-html, body {{ height: 100%; margin: 0; }}
-body {{ display: flex; flex-direction: column; gap: 14px; align-items: center; justify-content: center;
-       color: {text}; background: {bg};
-       font-family: 'Segoe UI Variable Text', 'Segoe UI', 'Yu Gothic UI', 'Meiryo', sans-serif; font-size: 14px; }}
-.spinner {{ width: 30px; height: 30px; border-radius: 50%;
-           border: 3px solid {track}; border-top-color: {accent}; animation: spin 0.8s linear infinite; }}
-@keyframes spin {{ to {{ transform: rotate(360deg); }} }}
-.sub {{ color: {sub}; font-size: 12px; }}
-</style></head><body>{spinner}<div>{message}</div><div class="sub">{sub_message}</div></body></html>"""
+
+class _Loading(QWidget):
+    """読み込み中の表示"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.addStretch(1)
+        self._title = label("読み込んでいます…", "EmptyTitle")
+        self._title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._title)
+        bar = QProgressBar()
+        bar.setRange(0, 0)
+        bar.setFixedWidth(220)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(bar)
+        row.addStretch(1)
+        layout.addLayout(row)
+        self._sub = label("", "EmptyText")
+        self._sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._sub)
+        layout.addStretch(2)
+    
+    def set_text(self, title: str, sub: str) -> None:
+        self._title.setText(title)
+        self._sub.setText(sub)
+        self._sub.setVisible(bool(sub))
 
 
 class PreviewPanel(QWidget):
@@ -61,27 +78,13 @@ class PreviewPanel(QWidget):
         self._hits: list = []
         self._current_hit = -1
         self._zoom = 100
-        self._pending_hit: Optional[int] = None
-        self._loaded = False
-        self._doc_id: Optional[str] = None
-        self._mode = "text"
+        self._mode = "rich"
         self._file: Optional[FileInfo] = None
-        
-        self._store = PreviewStore()
+        self._page_document = None
+        self._has_query = True
         self._setup_ui()
-        
-        self._scheme_handler = PreviewSchemeHandler(self._store, self)
-        self._web_view.page().profile().installUrlSchemeHandler(SCHEME, self._scheme_handler)
         theme().changed.connect(self._on_theme_changed)
         self._on_theme_changed(theme().palette)
-    
-    @property
-    def store(self) -> PreviewStore:
-        return self._store
-    
-    # ------------------------------------------------------------------
-    # 構築
-    # ------------------------------------------------------------------
     
     def _setup_ui(self) -> None:
         outer = QVBoxLayout(self)
@@ -189,12 +192,18 @@ class PreviewPanel(QWidget):
         
         # --- 表示領域 ---
         self._stack = QStackedWidget()
-        self._web_view = QWebEngineView()
-        self._web_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._web_view.customContextMenuRequested.connect(self._show_context_menu)
-        self._web_view.loadFinished.connect(self._on_load_finished)
-        self._web_view.titleChanged.connect(self._on_title_changed)
-        self._stack.addWidget(self._web_view)
+        self._page_view = PageView()
+        self._rich_view = RichTextView()
+        self._plain_view = PlainTextView()
+        for view in (self._page_view, self._rich_view, self._plain_view):
+            view.hit_clicked.connect(lambda index: self._goto_hit(index))
+            view.zoom_step_requested.connect(self.step_zoom)
+            view.section_changed.connect(self._on_section_scrolled)
+            view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            view.customContextMenuRequested.connect(lambda pos, v=view: self._show_context_menu(v, pos))
+            self._stack.addWidget(view)
+        self._loading = _Loading()
+        self._stack.addWidget(self._loading)
         self._empty = EmptyState(
             "page",
             "ファイルを選ぶとここに表示されます",
@@ -236,11 +245,10 @@ class PreviewPanel(QWidget):
     # ------------------------------------------------------------------
     
     def _on_theme_changed(self, p) -> None:
-        self._store.dark = p.dark
-        self._web_view.page().setBackgroundColor(QColor(p.preview_bg))
         self._section_icon.setPixmap(icons.pixmap("layers", p.text_secondary, 16))
-        if self._loaded:
-            self._web_view.page().runJavaScript(f"typeof setDark === 'function' && setDark({str(p.dark).lower()});")
+        self._page_view.apply_theme()
+        self._rich_view.apply_theme()
+        self._plain_view.apply_theme()
         if self._file is not None:
             self._file_icon.setPixmap(icons.file_pixmap(self._file.extension, 32))
     
@@ -248,21 +256,14 @@ class PreviewPanel(QWidget):
     # 内容の設定
     # ------------------------------------------------------------------
     
+    def _view(self):
+        return {"page": self._page_view, "plain": self._plain_view}.get(self._mode, self._rich_view)
+    
     def _set_file_controls_enabled(self, enabled: bool) -> None:
         for widget in (self._open_btn, self._reveal_btn, self._copy_btn, self._mode_switch):
             widget.setEnabled(enabled)
         for widget in (self._zoom_out_btn, self._zoom_in_btn, self._zoom_label, self._fit_btn, self._section_combo):
             widget.setEnabled(enabled)
-    
-    def _show_message(self, message: str, sub_message: str = "", spinner: bool = False) -> None:
-        p = palette()
-        self._loaded = False
-        self._web_view.setHtml(_MESSAGE_HTML.format(
-            text=p.text, sub=p.text_secondary, bg=p.preview_bg, track=p.border, accent=p.accent,
-            spinner="<div class='spinner'></div>" if spinner else "",
-            message=html.escape(message), sub_message=html.escape(sub_message),
-        ))
-        self._stack.setCurrentWidget(self._web_view)
     
     def show_loading(self, file_info: FileInfo, converting: bool) -> None:
         """読み込み中の表示"""
@@ -276,11 +277,11 @@ class PreviewPanel(QWidget):
         self._update_position()
         self._info_bar.hide()
         self._section_combo.clear()
-        self._show_message(
+        self._loading.set_text(
             "読み込んでいます…",
             "初回は表示用の変換に数秒かかることがあります" if converting else "",
-            spinner=True,
         )
+        self._stack.setCurrentWidget(self._loading)
     
     def _set_header(self, file_info: FileInfo) -> None:
         self._file = file_info
@@ -300,9 +301,7 @@ class PreviewPanel(QWidget):
         expected_hits: 検索結果の件数（原本表示で見つかった数が少ない場合に案内する）
         """
         self._set_header(file_info)
-        doc_id = self._store.new_id()
-        self._store.put(doc_id, preview.html, preview.page_document)
-        self._doc_id = doc_id
+        self._release_document()
         self._mode = preview.mode
         self._hits = preview.hits
         self._current_hit = -1
@@ -335,27 +334,44 @@ class PreviewPanel(QWidget):
                 "残りはノート・非表示のシートなど画面に表示されない場所にある可能性があります（「テキスト」表示で確認できます）。"
             )
         self._info_bar.show_message(" ".join(notes))
-        self._footer.setText(preview.info)
+        footer = preview.info
+        if preview.encoding:
+            footer = f"{footer}  |  文字コード: {preview.encoding}" if footer else f"文字コード: {preview.encoding}"
+        self._footer.setText(footer)
         
-        # 読み込み完了後に最初のヒット箇所へ移動し、ページ表示は幅に合わせる
-        self._pending_hit = min(start_hit, len(self._hits) - 1) if self._hits else None
-        self._zoom = 100
-        self._loaded = False
-        self._web_view.load(QUrl(self._store.url(doc_id)))
+        view = self._view()
+        if preview.mode == "page":
+            self._page_document = preview.page_document
+            self._page_view.set_document(preview.page_document, preview.page_hits)
+        elif preview.mode == "plain":
+            self._plain_view.set_content(preview.plain_text, preview.plain_hits)
+        else:
+            self._rich_view.set_content(preview.html)
+        self._stack.setCurrentWidget(view)
+        
+        # ページ表示は幅に合わせる（縮小のみ）、テキストは 100%
+        if preview.mode == "page":
+            self.fit_width(shrink_only=True)
+        else:
+            self.set_zoom(100)
+        if self._hits:
+            self._goto_hit(min(start_hit, len(self._hits) - 1))
         self._update_position()
-        self._update_zoom_label()
-    
-    _has_query = True
     
     def set_has_query(self, has_query: bool) -> None:
         self._has_query = has_query
     
+    def _release_document(self) -> None:
+        self._page_view.clear()
+        if self._page_document is not None:
+            self._page_document.close()
+            self._page_document = None
+    
     def clear(self) -> None:
-        self._doc_id = None
+        self._release_document()
         self._file = None
         self._hits = []
         self._current_hit = -1
-        self._pending_hit = None
         self._title.setText("プレビュー")
         self._path.setText("")
         self._file_icon.clear()
@@ -365,66 +381,13 @@ class PreviewPanel(QWidget):
         self._set_file_controls_enabled(False)
         self._update_position()
         self._stack.setCurrentWidget(self._empty)
-        self._store.release_except(None)
     
     def shutdown(self) -> None:
-        self._scheme_handler.shutdown()
-        self._store.release_except(None)
+        self._page_view.shutdown()
+        self._release_document()
     
     def current_file(self) -> Optional[FileInfo]:
         return self._file
-    
-    # ------------------------------------------------------------------
-    # 読み込み完了・ページからの通知
-    # ------------------------------------------------------------------
-    
-    def _on_load_finished(self, ok: bool) -> None:
-        if not ok or self._doc_id is None:
-            return
-        if not self._web_view.url().toString().startswith(SCHEME.decode()):
-            return
-        self._loaded = True
-        self._install_wheel_filter()
-        self._web_view.setZoomFactor(self._zoom / 100)
-        self._store.release_except(self._doc_id)
-        
-        def after_fit(_=None):
-            if self._pending_hit is not None:
-                index, self._pending_hit = self._pending_hit, None
-                self._goto_hit(index, smooth=False)
-        
-        if self._mode == "page":
-            self.fit_width(shrink_only=True, then=after_fit)
-        else:
-            after_fit()
-    
-    def _on_title_changed(self, title: str) -> None:
-        parts = title.split(":")
-        if len(parts) < 2:
-            return
-        try:
-            value = int(parts[1])
-        except ValueError:
-            return
-        if parts[0] == "hit" and 0 <= value < len(self._hits):
-            self._goto_hit(value, scroll=False)
-        elif parts[0] == "sec" and 0 <= value < self._section_combo.count():
-            self._section_combo.setCurrentIndex(value)
-    
-    def _install_wheel_filter(self) -> None:
-        """Ctrl+ホイールでのズームを、このパネルのズーム操作として扱う"""
-        proxy = self._web_view.focusProxy()
-        if proxy is not None and not proxy.property("ufst_wheel_filter"):
-            proxy.installEventFilter(self)
-            proxy.setProperty("ufst_wheel_filter", True)
-    
-    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
-        if event.type() == QEvent.Type.Wheel and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            delta = event.angleDelta().y()
-            if delta:
-                self.step_zoom(1 if delta > 0 else -1)
-            return True
-        return super().eventFilter(watched, event)
     
     # ------------------------------------------------------------------
     # ヒット箇所の移動
@@ -440,16 +403,12 @@ class PreviewPanel(QWidget):
         for widget in (self._prev_btn, self._next_btn, self._position):
             widget.setEnabled(total > 0)
     
-    def _goto_hit(self, index: int, smooth: bool = True, scroll: bool = True) -> None:
+    def _goto_hit(self, index: int) -> None:
         if not self._hits:
             return
         self._current_hit = index % len(self._hits)
         self._update_position()
-        if self._loaded:
-            # クリックされた箇所（scroll=False）も「現在の箇所」として強調し直す
-            self._web_view.page().runJavaScript(
-                f"typeof gotoHit === 'function' && gotoHit({self._current_hit}, {'true' if smooth else 'false'});"
-            )
+        self._view().goto_hit(self._current_hit)
     
     def go_next_match(self) -> None:
         if self._hits:
@@ -474,8 +433,13 @@ class PreviewPanel(QWidget):
             more.setEnabled(False)
     
     def _on_section_chosen(self, index: int) -> None:
-        if self._loaded:
-            self._web_view.page().runJavaScript(f"typeof gotoSection === 'function' && gotoSection({index});")
+        self._view().goto_section(index)
+    
+    def _on_section_scrolled(self, index: int) -> None:
+        if 0 <= index < self._section_combo.count():
+            self._section_combo.blockSignals(True)
+            self._section_combo.setCurrentIndex(index)
+            self._section_combo.blockSignals(False)
     
     def _request_mode(self, mode: str) -> None:
         button = self._mode_switch.button(mode)
@@ -489,7 +453,7 @@ class PreviewPanel(QWidget):
     
     def set_zoom(self, value: int) -> None:
         self._zoom = max(ZOOM_STEPS[0], min(ZOOM_STEPS[-1], int(value)))
-        self._web_view.setZoomFactor(self._zoom / 100)
+        self._view().set_zoom(self._zoom / 100)
         self._update_zoom_label()
     
     def step_zoom(self, direction: int) -> None:
@@ -504,19 +468,16 @@ class PreviewPanel(QWidget):
     def _update_zoom_label(self) -> None:
         self._zoom_label.setText(f"{self._zoom}%")
     
-    def fit_width(self, shrink_only: bool = False, then=None) -> None:
+    def fit_width(self, shrink_only: bool = False) -> None:
         """ページの幅を表示領域に合わせる"""
-        def apply(width):
-            if width:
-                available = self._web_view.width() - 48  # 余白とスクロールバーの分
-                value = int(available / float(width) * 100)
-                if shrink_only:
-                    value = min(100, max(MIN_AUTO_FIT, value))
-                self.set_zoom(value)
-            if then:
-                then()
-        
-        self._web_view.page().runJavaScript("typeof contentWidth === 'function' ? contentWidth() : 0;", apply)
+        width = self._page_view.content_width()
+        if not width or self._mode != "page":
+            return
+        available = self._page_view.viewport().width() - 48  # 余白の分
+        value = int(available / width * 100)
+        if shrink_only:
+            value = min(100, max(MIN_AUTO_FIT, value))
+        self.set_zoom(value)
     
     # ------------------------------------------------------------------
     # ファイル操作
@@ -534,13 +495,14 @@ class PreviewPanel(QWidget):
         if self._file is not None:
             QGuiApplication.clipboard().setText(str(self._file.path))
     
-    def _show_context_menu(self, pos) -> None:
-        page = self._web_view.page()
+    def _show_context_menu(self, view, pos) -> None:
         menu = QMenu(self)
-        menu.addAction(icons.icon("copy"), "コピー\tCtrl+C", lambda: page.triggerAction(QWebEnginePage.WebAction.Copy))
-        menu.addAction("すべて選択\tCtrl+A", lambda: page.triggerAction(QWebEnginePage.WebAction.SelectAll))
+        if view is not self._page_view:
+            menu.addAction(icons.icon("copy"), "コピー\tCtrl+C", view.copy)
+            menu.addAction("すべて選択\tCtrl+A", view.selectAll)
         if self._file is not None:
-            menu.addSeparator()
+            if not menu.isEmpty():
+                menu.addSeparator()
             menu.addAction(icons.icon("external"), "アプリで開く", self.open_current)
             menu.addAction(icons.icon("folder"), f"{file_manager_name()}で表示", self.reveal_current)
-        menu.exec(self._web_view.mapToGlobal(pos))
+        menu.exec(view.mapToGlobal(pos))

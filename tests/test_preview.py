@@ -1,4 +1,3 @@
-import re
 
 import pytest
 
@@ -44,7 +43,7 @@ def test_pdf_hits_have_rects_and_span_wrapped_lines(sample_dir):
 
 def test_large_page_is_split_into_tiles():
     layout = PageLayout((0, 0, 3000, 5000))
-    assert layout.cols == 3 and layout.rows == 5
+    assert layout.cols == 4 and layout.rows == 7  # 800pt ごとに分割
     left, top, right, bottom = layout.tile_rect(layout.tile_count - 1)
     assert right == pytest.approx(3000) and bottom == pytest.approx(5000)
     
@@ -53,44 +52,50 @@ def test_large_page_is_split_into_tiles():
     assert zoomed.to_display((10, 20, 60, 120)) == (0, 0, 100, 200)
 
 
-def test_page_view_html(sample_dir):
+def test_page_hit_labels_and_tile_rendering(sample_dir):
     document = PageDocument(sample_dir / "sample.pdf")
     try:
         hits, _ = document.find_hits(query("banana"))
-        html, preview_hits = PreviewRenderer().render_pages(document, hits, "tile")
-        assert html.count("class='page'") == 2
-        assert "src='tile/0/0.png'" in html and "src='tile/1/0.png'" in html
-        assert len(set(re.findall(r"data-hit='(\d+)'", html))) == 3
-        assert preview_hits[2].label == "ページ 2" and "【BANANA】" in preview_hits[2].text
+        labels = PreviewRenderer.page_hit_labels(document, hits)
+        assert labels[2].label == "ページ 2" and "【BANANA】" in labels[2].text
+        width, height, pixels = document.render_tile_rgb(0, 0, density=1.0)
+        assert len(pixels) == width * height * 3
+        # 密度を上げると高精細になる
+        width2, height2, _ = document.render_tile_rgb(0, 0, density=2.0)
+        assert abs(width2 - width * 2) <= 2 and abs(height2 - height * 2) <= 2
     finally:
         document.close()
 
 
 def test_text_view_marks_hits_and_escapes(sample_dir):
+    content = extract_file(str(sample_dir / "sample.docx"))
+    html, hits, truncated = PreviewRenderer().render_text(content, query("バナナ"))
+    assert len(hits) == 3 and not truncated
+    assert "<a name='hit-0' href='hit:0'" in html and "<a name='hit-2' href='hit:2'" in html
+    assert "@@MARK@@" in html  # 色は画面側でテーマに合わせて置き換える
+
+
+def test_plain_text_positions_and_line_numbers(sample_dir):
     content = extract_file(str(sample_dir / "notes.md"))
-    html, hits, truncated = PreviewRenderer().render_text(content, query("バナナ tag", term_mode="or"))
-    assert len(hits) == 2 and not truncated
-    assert "<mark class='hit' data-hit='0'>バナナ</mark>" in html
-    assert "&lt;b&gt;<mark class='hit' data-hit='1'>tag</mark>&lt;/b&gt;" in html
-    assert "utf-8" in html
-
-
-def test_text_view_keeps_line_numbers(sample_dir):
-    content = extract_file(str(sample_dir / "memo.txt"))
-    html, hits, _ = PreviewRenderer().render_text(content, query("四行目"))
-    gutter = re.search(r"<pre class='gutter'>(.*?)</pre>", html, re.S).group(1)
-    assert gutter.split("\n") == ["1", "2", "3", "4", "5"]
+    text, spans, hits, truncated = PreviewRenderer().render_plain(content, query("バナナ tag", term_mode="or"))
+    assert text.split("\n")[2] == "- バナナ"  # 空行も含め、元の行番号どおり
+    assert [text[s:e] for s, e in spans] == ["バナナ", "tag"] and not truncated
+    assert [h.label for h in hits] == ["行 3", "行 4"]
+    
+    memo = extract_file(str(sample_dir / "memo.txt"))
+    _, _, hits, _ = PreviewRenderer().render_plain(memo, query("四行目"))
     assert hits[0].label == "行 4"
 
 
 def test_text_view_excel_grid_and_shapes(sample_dir):
     content = extract_file(str(sample_dir / "sample.xlsx"))
-    html, hits, _ = PreviewRenderer().render_text(content, query("バナナ"))
+    renderer = PreviewRenderer()
+    html, hits, _ = renderer.render_text(content, query("バナナ"))
     assert len(hits) == 3
-    assert "<th>A</th><th>B</th><th>C</th>" in html
-    assert "<th class='row'>4</th><td>検索対象<mark" in html
+    assert ">A</td><td" in html and ">C</td>" in html
     assert "図形（B9 付近）" in html
     assert {h.label for h in hits} == {"シート: 売上, セル A4", "シート: 売上, 図形", "シート: メモ, セル B40"}
+    assert renderer.last_sections == ["シート: 売上", "シート: メモ"]
 
 
 def test_text_view_hit_limit(sample_dir):
@@ -129,7 +134,8 @@ def test_patch_sheet_xml_sets_print_options():
 def test_build_preview_text_and_pdf(sample_dir):
     options = SearchOptions(query="バナナ")
     preview = build_preview(FileInfo.from_path(sample_dir / "memo.txt"), options)
-    assert preview.mode == "text" and len(preview.hits) == 1 and not preview.page_mode_available
+    assert preview.mode == "plain" and len(preview.hits) == 1 and not preview.page_mode_available
+    assert preview.plain_text[preview.plain_hits[0][0]:preview.plain_hits[0][1]] == "バナナ"
     
     preview = build_preview(FileInfo.from_path(sample_dir / "sample.pdf"), SearchOptions(query="banana"))
     try:
@@ -141,7 +147,7 @@ def test_build_preview_text_and_pdf(sample_dir):
 def test_build_preview_falls_back_to_text_without_converter(sample_dir, isolated_config):
     isolated_config.office_converter = "none"
     preview = build_preview(FileInfo.from_path(sample_dir / "sample.xlsx"), SearchOptions(query="バナナ"))
-    assert preview.mode == "text" and len(preview.hits) == 3
+    assert preview.mode == "rich" and len(preview.hits) == 3
     assert "テキスト表示" in preview.note and not preview.page_mode_available
 
 

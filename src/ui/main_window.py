@@ -4,7 +4,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QObject, QRunnable, Qt, QThread, QThreadPool, Signal, Slot
+from PySide6.QtCore import QObject, QRunnable, Qt, QThread, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import QMainWindow, QMessageBox, QSplitter, QVBoxLayout, QWidget
 
@@ -16,7 +16,6 @@ from src.extraction import get_supported_extensions
 from src.preview import RenderedPreview, build_preview
 from src.preview.converter import OFFICE_EXTENSIONS, available_backends, prune_preview_cache
 from src.preview.loader import BACKEND_NAMES
-from src.preview.scheme import PreviewStore
 from src.search import (
     CompiledQuery,
     QueryError,
@@ -144,7 +143,7 @@ class PreviewTask(QRunnable):
     
     def run(self) -> None:
         try:
-            preview = build_preview(self._file_info, self._options, self._mode, PreviewStore.tile_prefix())
+            preview = build_preview(self._file_info, self._options, self._mode)
         except Exception as e:
             get_logger("preview").exception("error", f"Preview failed: {self._file_info.path}", e)
             preview = RenderedPreview(note=f"プレビューを作成できませんでした: {e}")
@@ -183,9 +182,10 @@ class MainWindow(QMainWindow):
         self._setup_ui()
         self._setup_shortcuts()
         self._restore_settings()
-        self._update_engine_label()
-        prune_preview_cache()
-        self._update_license()
+        # 時間のかかる確認はウィンドウを表示してから行う（起動を速くするため）
+        QTimer.singleShot(0, self._update_license)
+        QTimer.singleShot(50, self._update_engine_label)
+        QTimer.singleShot(2000, prune_preview_cache)
         
         theme().changed.connect(self._on_theme_changed)
         self._on_theme_changed(theme().palette)

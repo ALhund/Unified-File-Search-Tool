@@ -17,11 +17,11 @@ from src.search.query import CompiledQuery
 
 # 1pt（1/72インチ）あたりのCSSピクセル数
 CSS_PX_PER_PT = 96 / 72
-# 画面表示より高精細に描画する倍率（ズームしても文字がぼやけにくい）
+# 既定の描画密度（表示上の1ピクセルあたりの画素数）。画面側がズームと画面の拡大率に合わせて選ぶ
 RENDER_DENSITY = 1.5
-# タイル1枚の最大サイズ（表示上のpt）。巨大なシートは縦横に分割して必要な部分だけ描画する
-TILE_WIDTH_PT = 1300.0
-TILE_HEIGHT_PT = 1100.0
+# タイル1枚の最大サイズ（表示上のpt）。見えている部分だけを描画するため、ページを縦横に分割する
+TILE_WIDTH_PT = 800.0
+TILE_HEIGHT_PT = 800.0
 CONTEXT_CHARS = 30
 # Excelの行番号の標準的な文字サイズ（縮小率の推定に使う）
 SHEET_HEADING_FONT_PT = 11.0
@@ -144,8 +144,13 @@ class PageDocument:
     # 描画
     # ------------------------------------------------------------------
     
-    def render_tile(self, page_index: int, tile: int) -> Optional[bytes]:
-        """ページの一部（タイル）をPNGで返す"""
+    def render_tile_rgb(
+        self, page_index: int, tile: int, density: float = RENDER_DENSITY
+    ) -> Optional[tuple[int, int, bytes]]:
+        """ページの一部（タイル）を描画し、(幅, 高さ, RGB の画素列) で返す
+        
+        density: 表示上の1ピクセル（100% 表示）あたりの画素数
+        """
         if not 0 <= page_index < self.page_count:
             return None
         layout = self.layouts[page_index]
@@ -163,7 +168,7 @@ class PageDocument:
             max(0.0, layout.page_width - x1),
             max(0.0, y0),
         )
-        scale = CSS_PX_PER_PT * RENDER_DENSITY * layout.zoom
+        scale = CSS_PX_PER_PT * density * layout.zoom
         
         with PDFIUM_LOCK:
             if self._closed:
@@ -171,11 +176,20 @@ class PageDocument:
             page = self._doc[page_index]
             try:
                 bitmap = page.render(scale=scale, crop=crop, may_draw_forms=True)
-                image = bitmap.to_pil()
+                image = bitmap.to_pil().convert("RGB")
             finally:
                 page.close()
+        return image.width, image.height, image.tobytes()
+    
+    def render_tile(self, page_index: int, tile: int, density: float = RENDER_DENSITY) -> Optional[bytes]:
+        """タイルを PNG で返す（確認用）"""
+        data = self.render_tile_rgb(page_index, tile, density)
+        if data is None:
+            return None
+        from PIL import Image
+        width, height, pixels = data
         buffer = io.BytesIO()
-        image.convert("RGB").save(buffer, format="PNG", compress_level=3)
+        Image.frombytes("RGB", (width, height), pixels).save(buffer, format="PNG", compress_level=3)
         return buffer.getvalue()
     
     # ------------------------------------------------------------------

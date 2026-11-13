@@ -97,9 +97,6 @@ def make_samples(folder: Path) -> dict[str, int]:
 
 def run(report_path: Path) -> int:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
-    # 診断ではサンドボックスは不要（Linux の root 環境では有効だと起動できない）
-    os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
     
     report: dict = {"steps": [], "ok": True, "platform": sys.platform, "frozen": bool(getattr(sys, "frozen", False))}
     
@@ -180,9 +177,6 @@ def run(report_path: Path) -> int:
         def window():
             from PySide6.QtCore import QEventLoop, QTimer
             from PySide6.QtWidgets import QApplication
-            from src.preview.scheme import register_scheme
-            
-            register_scheme()
             app = QApplication.instance() or QApplication([sys.argv[0]])
             from src.ui import MainWindow
             from src.ui.settings import UserSettings
@@ -206,6 +200,23 @@ def run(report_path: Path) -> int:
                 wait(100)
             assert main._listing_root is not None, "ファイル一覧が表示されません"
             listed = main._results._proxy.rowCount()
+            
+            # 原本表示（ページ画像）とテキストファイル表示が実際に描画されること
+            from src.enumeration import FileInfo
+            from src.preview import build_preview
+            from src.search import SearchOptions
+            
+            pdf = FileInfo.from_path(folder / "sample.pdf")
+            main._preview.set_preview(pdf, build_preview(pdf, SearchOptions(query="banana")))
+            view = main._preview._page_view
+            deadline = time.time() + 20
+            while not view._cache and time.time() < deadline:
+                wait(100)
+            assert view._cache, "ページ画像が描画されません"
+            assert main._preview._position.text() == "1 / 2", main._preview._position.text()
+            memo = FileInfo.from_path(folder / "memo0.txt")
+            main._preview.set_preview(memo, build_preview(memo, SearchOptions(query="バナナ")))
+            assert main._preview._mode == "plain" and main._preview._plain_view.blockCount() >= 2
             from src.ui import icons
             assert not icons.app_icon().isNull(), "アプリのアイコンが読み込めません"
             assert "#Card" in app.styleSheet(), "テーマが適用されていません"

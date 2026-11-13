@@ -22,6 +22,8 @@ QT_EXCLUDES = [
     "QtBluetooth", "QtNfc", "QtSensors", "QtSerialBus", "QtSerialPort", "QtRemoteObjects",
     "QtScxml", "QtStateMachine", "QtHttpServer", "QtNetworkAuth", "QtWebSockets", "QtWebView",
     "QtCanvasPainter", "QtDesigner", "QtUiTools", "QtHelp", "QtSql", "QtTest", "QtQuickTest",
+    "QtWebEngineCore", "QtWebEngineWidgets", "QtWebChannel", "QtQml", "QtQuick", "QtNetwork",
+    "QtPositioning", "QtPrintSupport", "QtOpenGL",
     "QtPdf", "QtPdfWidgets", "QtLocation", "QtWebEngineQuick", "QtQuickControls2",
     "QtQuickWidgets", "QtOpenGLWidgets", "QtLabsStyleKit", "QtConcurrent", "QtDBus",
 ]
@@ -42,7 +44,6 @@ a = Analysis(
     hiddenimports=[
         "src.preview.msoffice_convert",
         "src.selftest",
-        "charset_normalizer.md__mypyc",
     ],
     excludes=[f"PySide6.{name}" for name in QT_EXCLUDES]
     + ["tkinter", "pytest", "PyInstaller", "IPython", "numpy", "matplotlib"],
@@ -56,13 +57,11 @@ a = Analysis(
 import re
 
 QT_ALLOWED = {
-    # 画面
-    "Core", "Gui", "Widgets", "Svg", "SvgWidgets", "PrintSupport", "OpenGL", "Network", "DBus",
-    # Qt WebEngine（プレビュー）とその依存
-    "WebEngineCore", "WebEngineWidgets", "WebChannel", "Positioning",
-    "Qml", "QmlMeta", "QmlModels", "QmlWorkerScript", "Quick", "QuickWidgets",
+    # 画面に必要なものだけ（Qt WebEngine＝Chromium は使わない）
+    "Core", "Gui", "Widgets", "Svg", "DBus",
     # Linux 用の表示プラグインの依存（Windows には存在しない）
     "XcbQpa", "WaylandClient", "WlShellIntegration", "EglFSDeviceIntegration", "EglFsKmsSupport",
+    "OpenGL",
 }
 QT_LIB = re.compile(r"(?:^|[/\\])(?:lib)?Qt6([A-Za-z0-9]+?)(?:d)?\.(?:dll|so[.\d]*|dylib)$")
 # 使わないプラグインの種類
@@ -79,7 +78,7 @@ def _keep(dest: str) -> bool:
     if "/Qt/qml/" in path or path.startswith("PySide6/qml/"):
         return False  # QML は使わない
     if "/translations/" in path:
-        # WebEngine の言語データと Qt の翻訳は日本語・英語だけ残す
+        # Qt の翻訳は日本語・英語だけ残す
         name = path.rsplit("/", 1)[-1]
         return name in ("ja.pak", "en-US.pak") or name.endswith("_ja.qm")
     if "/plugins/" in path:

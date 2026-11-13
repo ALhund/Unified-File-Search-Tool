@@ -1,8 +1,12 @@
 """Unified File Search - エントリーポイント"""
 
 import multiprocessing
+import os
 import sys
+import time
 from pathlib import Path
+
+_STARTED = time.perf_counter()
 
 # srcをパスに追加
 sys.path.insert(0, str(Path(__file__).parent))
@@ -19,13 +23,10 @@ def main() -> int:
     from src import APP_NAME, __version__
     from src.common.config import get_config
     from src.common.logger import get_logger
-    from src.preview.scheme import register_scheme
     from src.ui.platform import set_app_user_model_id
     
     # タスクバーに python.exe ではなく本アプリのアイコンを出す
     set_app_user_model_id()
-    # プレビュー用URLスキームは QApplication より前に登録する必要がある
-    register_scheme()
     
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
@@ -60,6 +61,16 @@ def main() -> int:
     
     window = MainWindow(settings)
     window.show()
+    
+    def startup_done() -> None:
+        # 起動にかかった時間を記録する（遅いと言われたときの調査用）
+        elapsed_ms = int((time.perf_counter() - _STARTED) * 1000)
+        logger.info("startup", "Window shown", elapsed_ms=elapsed_ms)
+        if mark := os.environ.get("UFST_STARTUP_MARK"):
+            Path(mark).write_text(str(elapsed_ms), encoding="utf-8")
+    
+    from PySide6.QtCore import QTimer
+    QTimer.singleShot(0, startup_done)
     
     exit_code = app.exec()
     

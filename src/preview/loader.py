@@ -34,7 +34,6 @@ def build_preview(
     file_info: FileInfo,
     options: Optional[SearchOptions],
     mode: str = "auto",
-    tile_url_prefix: str = "tile",
 ) -> RenderedPreview:
     """プレビューを生成する（時間がかかるのでUIスレッド以外で呼ぶ）
     
@@ -42,7 +41,6 @@ def build_preview(
         file_info: 対象ファイル
         options: 検索条件（マッチ箇所の強調に使う。None なら強調なし）
         mode: "auto"（可能なら原本表示）/ "text"（テキスト表示）
-        tile_url_prefix: ページ画像URLの接頭辞
     """
     logger = get_logger("preview")
     renderer = PreviewRenderer()
@@ -83,7 +81,8 @@ def build_preview(
                 hits, truncated = (
                     document.find_hits(query, config.preview_max_hits) if query else ([], False)
                 )
-                preview.html, preview.hits = renderer.render_pages(document, hits, tile_url_prefix)
+                preview.page_hits = hits
+                preview.hits = renderer.page_hit_labels(document, hits)
                 preview.mode = "page"
                 preview.sections = list(document.labels)
                 preview.page_document = document
@@ -96,10 +95,19 @@ def build_preview(
     content = load_content(file_info)
     if content.error:
         preview.note = _join_notes(preview.note, f"読み込みエラー: {content.error}")
+    if content.total_lines is not None:
+        # テキストファイル: 行番号つきでそのまま
+        preview.plain_text, preview.plain_hits, preview.hits, preview.truncated = renderer.render_plain(
+            content, query, config.preview_max_hits
+        )
+        preview.encoding = content.encoding or ""
+        preview.mode = "plain"
+        return preview
+    
     preview.html, preview.hits, preview.truncated = renderer.render_text(
         content, query, config.preview_max_hits
     )
-    preview.mode = "text"
+    preview.mode = "rich"
     preview.sections = renderer.last_sections
     return preview
 
