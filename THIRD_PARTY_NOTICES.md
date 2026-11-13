@@ -20,6 +20,7 @@ Unified File Search は、以下のオープンソース ソフトウェアを�
 | [lxml](https://lxml.de/) | XML の解析 | BSD-3-Clause |
 | [XlsxWriter](https://github.com/jmcnamara/XlsxWriter)（python-pptx が使用） | — | BSD-2-Clause |
 | [Pillow](https://python-pillow.org/) | 画像の変換 | MIT-CMU（HPND） |
+| [cryptography](https://github.com/pyca/cryptography) / cffi / pycparser | ライセンスコードの検証（Ed25519 署名） | Apache-2.0 または BSD-3-Clause / MIT-0 / BSD-3-Clause |
 | [charset-normalizer](https://github.com/jawah/charset_normalizer) | 文字コードの判別 | MIT |
 | [typing_extensions](https://github.com/python/typing_extensions) | — | PSF-2.0 |
 | [pywin32](https://github.com/mhammond/pywin32)（Windows のみ） | Microsoft Office との連携 | PSF-2.0 |

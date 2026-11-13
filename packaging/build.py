@@ -64,8 +64,25 @@ def _utf8_console() -> None:
             pass
 
 
+def check_license_key() -> None:
+    """販売用の公開鍵が設定されているか確かめる"""
+    from src.licensing.public_key import PUBLIC_KEY_B64
+    
+    if PUBLIC_KEY_B64:
+        return
+    message = (
+        "ライセンスの公開鍵が設定されていません。この実行ファイルは「開発版」になり、"
+        "ライセンス登録なしで制限なく使えます。販売用に作る場合は、先に "
+        "tools/license_generator.py で鍵を作ってください。"
+    )
+    if __import__("os").environ.get("UFST_RELEASE") == "1":
+        raise SystemExit(f"エラー: {message}")
+    print(f"注意: {message}")
+
+
 def main() -> int:
     _utf8_console()
+    check_license_key()
     shutil.rmtree(APP_FOLDER, ignore_errors=True)
     
     env = dict(**__import__("os").environ)

@@ -6,6 +6,7 @@ from src.ui.widgets.preview_panel import PreviewPanel
 from src.ui.widgets.status_bar import StatusBar
 from src.ui.widgets.regex_help_dialog import RegexHelpDialog
 from src.ui.widgets.dialogs import AboutDialog, SettingsDialog, ShortcutsDialog
+from src.ui.widgets.license_dialog import LicenseBar, LicenseDialog
 
 __all__ = [
     "SearchBar",
@@ -16,4 +17,6 @@ __all__ = [
     "AboutDialog",
     "SettingsDialog",
     "ShortcutsDialog",
+    "LicenseBar",
+    "LicenseDialog",
 ]

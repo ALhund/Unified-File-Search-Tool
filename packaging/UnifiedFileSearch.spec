@@ -92,8 +92,16 @@ def _keep(dest: str) -> bool:
     return True
 
 
-a.binaries = [entry for entry in a.binaries if _keep(entry[0])]
-a.datas = [entry for entry in a.datas if _keep(entry[0])]
+def _keep_entry(entry) -> bool:
+    dest, source, kind = entry[0], entry[1], entry[2]
+    if kind == "SYMLINK":
+        # Linux/macOS のリンクは、リンク先を除外した場合にリンクも除く
+        return _keep(dest) and _keep(str(source))
+    return _keep(dest)
+
+
+a.binaries = [entry for entry in a.binaries if _keep_entry(entry)]
+a.datas = [entry for entry in a.datas if _keep_entry(entry)]
 
 pyz = PYZ(a.pure)
 

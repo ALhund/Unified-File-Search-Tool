@@ -191,7 +191,8 @@ def run(report_path: Path) -> int:
             
             settings = UserSettings(QSettings(str(folder / "settings.ini"), QSettings.Format.IniFormat))
             theme().apply(app)
-            main = MainWindow(settings)
+            from src.licensing.manager import LicenseManager
+            main = MainWindow(settings, LicenseManager(folder / "window_license.json"))
             main.show()
             main._search_bar.set_folder(str(folder))
             
@@ -212,7 +213,25 @@ def run(report_path: Path) -> int:
             wait(200)
             return {"listed_files": listed}
         
+        def licensing():
+            from datetime import date, timedelta
+            from src.licensing.codec import generate_private_key, issue_code, public_key_b64
+            from src.licensing.manager import LicenseManager
+            from src.licensing.public_key import PUBLIC_KEY_B64
+            
+            # 使い捨ての鍵で、署名・検証・体験期間の判定が実行ファイルの中で動くことを確かめる
+            key = generate_private_key()
+            storage = folder / "license.json"
+            today = date(2026, 1, 1)
+            manager = LicenseManager(storage, public_key_b64(key), today=today)
+            assert manager.state().status == "trial"
+            assert LicenseManager(storage, public_key_b64(key), today=today + timedelta(days=400)).state().status == "expired"
+            manager.activate("自己診断", issue_code(key, "自己診断", 1))
+            assert LicenseManager(storage, public_key_b64(key)).state().status == "licensed"
+            return {"public_key_configured": bool(PUBLIC_KEY_B64)}
+        
         step("search", search)
+        step("licensing", licensing)
         step("pdf_preview", pdf_preview)
         step("office_preview", office_preview)
         step("window", window)

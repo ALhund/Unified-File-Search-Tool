@@ -12,6 +12,7 @@ dependencies = [
     "pypdfium2>=4.30.0",
     "charset-normalizer>=3.3.0",
     "pillow>=10.0.0",
+    "cryptography>=42.0.0",
     "pywin32>=306; sys_platform == 'win32'",
 ]
 

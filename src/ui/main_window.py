@@ -25,12 +25,15 @@ from src.search import (
     SearchSummary,
     shutdown_pool,
 )
+from src.licensing import LicenseManager
 from src.ui import icons
 from src.ui.platform import style_title_bar
 from src.ui.settings import UserSettings, apply_to_config
 from src.ui.theme import theme
 from src.ui.widgets import (
     AboutDialog,
+    LicenseBar,
+    LicenseDialog,
     PreviewPanel,
     RegexHelpDialog,
     ResultsPanel,
@@ -155,11 +158,12 @@ class PreviewTask(QRunnable):
 class MainWindow(QMainWindow):
     """メインウィンドウ"""
     
-    def __init__(self, settings: Optional[UserSettings] = None):
+    def __init__(self, settings: Optional[UserSettings] = None, license_manager: Optional[LicenseManager] = None):
         super().__init__()
         self._config = get_config()
         self._logger = get_logger("ui")
         self._settings = settings or UserSettings()
+        self._license = license_manager or LicenseManager()
         
         self._search_thread: Optional[QThread] = None
         self._search_worker: Optional[SearchWorker] = None
@@ -181,6 +185,7 @@ class MainWindow(QMainWindow):
         self._restore_settings()
         self._update_engine_label()
         prune_preview_cache()
+        self._update_license()
         
         theme().changed.connect(self._on_theme_changed)
         self._on_theme_changed(theme().palette)
@@ -218,9 +223,14 @@ class MainWindow(QMainWindow):
         bar.theme_requested.connect(self._set_theme_mode)
         bar.shortcuts_requested.connect(lambda: ShortcutsDialog(self).exec())
         bar.regex_help_requested.connect(lambda: RegexHelpDialog(self).exec())
-        bar.about_requested.connect(lambda: AboutDialog(self).exec())
+        bar.about_requested.connect(lambda: AboutDialog(self, self._license.state()).exec())
+        bar.license_requested.connect(lambda: self._open_license_dialog())
         bar.match_limit_changed.connect(self._on_match_limit_changed)
         layout.addWidget(bar)
+        
+        self._license_bar = LicenseBar()
+        self._license_bar.register_requested.connect(lambda: self._open_license_dialog())
+        layout.addWidget(self._license_bar)
         
         content = QWidget()
         content_layout = QVBoxLayout(content)
@@ -338,6 +348,22 @@ class MainWindow(QMainWindow):
         self._config.search_max_matches_per_file = value
     
     # ------------------------------------------------------------------
+    # ライセンス
+    # ------------------------------------------------------------------
+    
+    def _update_license(self) -> None:
+        state = self._license.state()
+        self._license_bar.set_state(state)
+        suffix = {"trial": "（体験版）", "expired": "（体験期間終了）", "unconfigured": "（開発版）"}.get(state.status, "")
+        self.setWindowTitle(f"Unified File Search{suffix}")
+    
+    def _open_license_dialog(self, reason: str = "") -> None:
+        dialog = LicenseDialog(self._license, self, reason)
+        dialog.exec()
+        if dialog.changed:
+            self._update_license()
+    
+    # ------------------------------------------------------------------
     # 設定画面
     # ------------------------------------------------------------------
     
@@ -438,6 +464,13 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     
     def _on_search_requested(self) -> None:
+        if not self._license.state().can_search:
+            self._open_license_dialog(
+                "体験期間が終了しました。引き続き検索するには、ライセンスを登録してください。"
+                "（フォルダ内のファイル一覧の表示とプレビューは、このままお使いいただけます）"
+            )
+            if not self._license.state().can_search:
+                return
         c = self._search_bar.conditions()
         folder = c["folder"]
         if not folder:

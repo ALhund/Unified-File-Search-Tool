@@ -69,6 +69,7 @@ class SearchBar(QFrame):
     shortcuts_requested = Signal()
     regex_help_requested = Signal()
     about_requested = Signal()
+    license_requested = Signal()
     match_limit_changed = Signal(int)  # 利用者が上限を変えたとき
     
     def __init__(self, parent: Optional[QWidget] = None):
@@ -128,6 +129,7 @@ class SearchBar(QFrame):
         help_menu.addAction(icons.icon("keyboard"), "キーボード ショートカット\tF1", self.shortcuts_requested.emit)
         help_menu.addAction(icons.icon("regex"), "正規表現の書き方", self.regex_help_requested.emit)
         help_menu.addSeparator()
+        help_menu.addAction(icons.icon("key"), "ライセンスの登録…", self.license_requested.emit)
         help_menu.addAction(icons.icon("info"), "バージョン情報", self.about_requested.emit)
         help_btn.setMenu(help_menu)
         self._help_menu = help_menu

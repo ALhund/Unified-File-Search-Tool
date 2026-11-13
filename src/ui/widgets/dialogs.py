@@ -330,7 +330,7 @@ def _open_third_party_notices() -> None:
 
 
 class AboutDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, license_state=None):
         super().__init__(parent)
         self.setWindowTitle("バージョン情報")
         self.setFixedWidth(440)
@@ -347,6 +347,10 @@ class AboutDialog(QDialog):
         version = label(f"バージョン {APP_VERSION}", "Secondary")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(version)
+        if license_state is not None:
+            licensed = label(license_state.summary(), "")
+            licensed.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(licensed)
         backends = available_backends()
         engine = {"msoffice": "Microsoft Office", "libreoffice": "LibreOffice"}.get(
             backends[0] if backends else "", "なし（テキスト表示）"

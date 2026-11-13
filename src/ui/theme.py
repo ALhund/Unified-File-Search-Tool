@@ -676,6 +676,24 @@ QDialog #DialogTitle {{
 #SettingsRowTitle {{
     font-weight: 600;
 }}
+#LicenseBar {{
+    background: {accent_soft};
+    border-bottom: 1px solid {border};
+}}
+#LicenseBar[expired="true"] {{
+    background: {warning_bg};
+    border-bottom: 1px solid {warning_border};
+}}
+#LicenseNotice {{
+    background: {warning_bg};
+    border: 1px solid {warning_border};
+    border-radius: 8px;
+    padding: 8px 10px;
+    color: {warning_text};
+}}
+#ErrorText {{
+    color: {danger};
+}}
 """
 
 
