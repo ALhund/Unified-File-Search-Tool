@@ -82,3 +82,57 @@ def file_manager_name() -> str:
     if sys.platform == "darwin":
         return "Finder"
     return "ファイルマネージャー"
+
+
+# ---------------------------------------------------------------------------
+# Windows のサインイン時に起動
+# ---------------------------------------------------------------------------
+
+_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+_RUN_VALUE = "UnifiedFileSearch"
+
+
+def autostart_supported() -> bool:
+    return sys.platform == "win32"
+
+
+def autostart_command() -> str:
+    """サインイン時に実行するコマンド（タスクトレイに常駐して起動する）"""
+    from src.common.paths import app_dir, is_frozen
+    
+    if is_frozen():
+        return f'"{sys.executable}" --background'
+    pythonw = Path(sys.executable).with_name("pythonw.exe")
+    interpreter = pythonw if pythonw.exists() else Path(sys.executable)
+    return f'"{interpreter}" "{app_dir() / "main.py"}" --background'
+
+
+def is_autostart_enabled() -> bool:
+    if not autostart_supported():
+        return False
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY) as key:
+            winreg.QueryValueEx(key, _RUN_VALUE)
+        return True
+    except OSError:
+        return False
+
+
+def set_autostart(enabled: bool) -> bool:
+    """サインイン時の起動を設定する（成功したら True）"""
+    if not autostart_supported():
+        return False
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+            if enabled:
+                winreg.SetValueEx(key, _RUN_VALUE, 0, winreg.REG_SZ, autostart_command())
+            else:
+                try:
+                    winreg.DeleteValue(key, _RUN_VALUE)
+                except FileNotFoundError:
+                    pass
+        return True
+    except OSError:
+        return False

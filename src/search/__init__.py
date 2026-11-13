@@ -9,6 +9,9 @@ from src.search.searcher import (
     load_content,
     search_content,
     shutdown_pool,
+    warm_pool,
+    worker_count,
+    logical_processors,
 )
 
 __all__ = [
@@ -22,5 +25,8 @@ __all__ = [
     "load_content",
     "search_content",
     "shutdown_pool",
+    "warm_pool",
+    "worker_count",
+    "logical_processors",
     "split_terms",
 ]

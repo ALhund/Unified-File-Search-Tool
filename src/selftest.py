@@ -124,18 +124,31 @@ def run(report_path: Path) -> int:
             from src.enumeration import FileEnumerator
             from src.search import Searcher, SearchOptions, shutdown_pool
             
-            config.extraction_cache_enabled = False
+            config._cache_path = folder / "cache"  # 利用者のインデックスには触れない
+            config._cache_path.mkdir()
+            import src.extraction.cache as cache_module
+            cache_module._cache = None
             files = FileEnumerator().enumerate(folder).files
+            options = SearchOptions(query="バナナ banana", term_mode="or")
             results = []
-            summary = Searcher().search_files(
-                files, SearchOptions(query="バナナ banana", term_mode="or"), result_callback=results.append
-            )
+            summary = Searcher().search_files(files, options, result_callback=results.append)
+            # 2回目はインデックスで絞り込む（結果は同じ）
+            again = []
+            second = Searcher().search_files(files, SearchOptions(query="りんご"), result_callback=again.append)
+            assert second.cache_hits == len(files) and second.skipped_by_index == len(files) - 1, second
             shutdown_pool()
+            # Excel への書き出し
+            from src.export import export_results
+            exported = folder / "export.xlsx"
+            export_results(exported, results, options, folder)
+            from openpyxl import load_workbook
+            assert load_workbook(exported).sheetnames == ["ファイル一覧", "ヒット箇所", "検索条件"]
             counts = {r.file_info.name: r.match_count for r in results}
             errors = {r.file_info.name: r.error for r in results if r.error}
             assert not errors, f"読み込みエラー: {errors}"
             assert counts == expected, f"ヒット数が違います: {counts} != {expected}"
-            return {"files": summary.total_files, "matches": summary.total_matches}
+            return {"files": summary.total_files, "matches": summary.total_matches, "workers": summary.workers,
+                    "skipped_by_index": second.skipped_by_index}
         
         def pdf_preview():
             from src.enumeration import FileInfo
@@ -220,7 +233,7 @@ def run(report_path: Path) -> int:
             from src.ui import icons
             assert not icons.app_icon().isNull(), "アプリのアイコンが読み込めません"
             assert "#Card" in app.styleSheet(), "テーマが適用されていません"
-            main.close()
+            main.quit_app()  # タスクトレイに常駐させず、確実に終了する
             wait(200)
             return {"listed_files": listed}
         

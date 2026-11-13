@@ -11,6 +11,7 @@ from src.extraction.office_extractor import (
     PowerPointExtractor,
 )
 from src.extraction.pdf_extractor import PdfExtractor
+from src.extraction.legacy_extractor import DocExtractor, PptExtractor, XlsExtractor
 
 
 # 登録されたExtractor一覧
@@ -20,6 +21,9 @@ _extractors: list[TextExtractor] = [
     ExcelExtractor(),
     PowerPointExtractor(),
     PdfExtractor(),
+    XlsExtractor(),
+    DocExtractor(),
+    PptExtractor(),
 ]
 
 

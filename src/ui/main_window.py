@@ -5,8 +5,10 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThread, QThreadPool, QTimer, Signal, Slot
+import time
+
 from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
-from PySide6.QtWidgets import QMainWindow, QMessageBox, QSplitter, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QMessageBox, QSplitter, QSystemTrayIcon, QVBoxLayout, QWidget
 
 from src.common.config import get_config
 from src.common.logger import get_logger
@@ -23,7 +25,9 @@ from src.search import (
     SearchOptions,
     SearchSummary,
     shutdown_pool,
+    warm_pool,
 )
+from src.index import IndexStatus, IndexWorker
 from src.licensing import LicenseManager
 from src.ui import icons
 from src.ui.platform import style_title_bar
@@ -185,7 +189,12 @@ class MainWindow(QMainWindow):
         # 時間のかかる確認はウィンドウを表示してから行う（起動を速くするため）
         QTimer.singleShot(0, self._update_license)
         QTimer.singleShot(50, self._update_engine_label)
+        QTimer.singleShot(300, warm_pool)
         QTimer.singleShot(2000, prune_preview_cache)
+        
+        self._quitting = False
+        self._setup_index()
+        self._setup_tray()
         
         theme().changed.connect(self._on_theme_changed)
         self._on_theme_changed(theme().palette)
@@ -244,6 +253,7 @@ class MainWindow(QMainWindow):
         self._results.file_selected.connect(self._on_entry_selected)
         self._results.back_to_listing.connect(self._show_listing)
         self._results.browse_requested.connect(bar.browse_folder)
+        self._results.export_requested.connect(self._export_results)
         self._splitter.addWidget(self._results)
         
         self._preview = PreviewPanel()
@@ -270,6 +280,7 @@ class MainWindow(QMainWindow):
             ("Ctrl+E", self._preview.reveal_current),
             ("Ctrl+Shift+C", self._preview.copy_path),
             ("Ctrl+Return", self._preview.open_current),
+            ("Ctrl+S", self._export_results),
         ]
         for key, handler in bindings:
             shortcut = QShortcut(QKeySequence(key), self)
@@ -376,7 +387,9 @@ class MainWindow(QMainWindow):
             theme().use_system_accent = self._settings.use_system_accent
             theme().apply()
             self._update_engine_label()
-            shutdown_pool()  # 並列数の変更を反映する
+            self._apply_index_settings()
+            if dialog.index_update_requested:
+                QTimer.singleShot(200, self.update_index)
         if dialog.cache_cleared:
             self._status.set_message("キャッシュを消去しました", "check")
     
@@ -512,6 +525,10 @@ class MainWindow(QMainWindow):
     def _start_search(self, folder: Path, options: SearchOptions, extensions: set[str],
                       include_subfolders: bool, max_matches: int) -> None:
         self._stop_search()
+        # 検索を優先し、索引の更新は検索のあとに回す
+        if self._index_running:
+            self._index_worker.cancel()
+            self._index_pending = True
         self._search_options = options
         self._search_root = folder
         self._current_entry = None
@@ -574,6 +591,13 @@ class MainWindow(QMainWindow):
     
     def _on_search_finished(self, summary: SearchSummary) -> None:
         self._stop_search()
+        if self._search_root is not None and not summary.cancelled:
+            before = list(self._settings.index_folders)
+            self._remember_index_folder(str(self._search_root))
+            if self._settings.index_folders != before:
+                self._index_pending = True
+        if self._index_pending:
+            QTimer.singleShot(1500, self.update_index)
         self._search_bar.set_searching(False)
         self._status.show_progress(False)
         self._status.set_time(summary.elapsed)
@@ -600,6 +624,51 @@ class MainWindow(QMainWindow):
         self._results.finish_search(cancelled=True)
         self._status.set_message(f"エラー: {error}", "warning")
         QMessageBox.critical(self, "エラー", f"検索中にエラーが発生しました:\n{error}")
+    
+    # ------------------------------------------------------------------
+    # Excel への書き出し
+    # ------------------------------------------------------------------
+    
+    def _export_results(self) -> None:
+        results = self._results.results() if self._results.is_showing_results() else []
+        if not results or self._search_worker is not None:
+            self._status.set_message("書き出す検索結果がありません（検索が終わってから書き出せます）", "info")
+            return
+        from PySide6.QtWidgets import QFileDialog
+        from src.export import export_results
+        from src.ui.platform import open_file
+        
+        options = self._search_options
+        keyword = "".join(c for c in (options.query if options else "") if c not in '\\/:*?"<>|')[:30].strip()
+        name = f"検索結果_{keyword or '結果'}_{time.strftime('%Y%m%d_%H%M')}.xlsx"
+        start = str(Path(self._settings.export_folder or Path.home()) / name)
+        path, _ = QFileDialog.getSaveFileName(self, "Excel に書き出す", start, "Excel ブック (*.xlsx)")
+        if not path:
+            return
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            files, hits = export_results(Path(path), results, options, self._search_root)
+        except PermissionError:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, "書き出し", "保存できませんでした。同じ名前のファイルを Excel で開いていないか確認してください。")
+            return
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, "書き出し", f"保存できませんでした: {e}")
+            return
+        QApplication.restoreOverrideCursor()
+        self._settings.export_folder = str(Path(path).parent)
+        self._status.set_message(f"{files:,} ファイル・{hits:,} 件を書き出しました: {path}", "check")
+        box = QMessageBox(self)
+        box.setWindowTitle("書き出し")
+        box.setText(f"{files:,} ファイル・{hits:,} 件のヒットを書き出しました。")
+        open_button = box.addButton("開く", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("閉じる", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is open_button:
+            open_file(Path(path))
     
     # ------------------------------------------------------------------
     # プレビュー
@@ -641,7 +710,152 @@ class MainWindow(QMainWindow):
     # 終了
     # ------------------------------------------------------------------
     
+    # ------------------------------------------------------------------
+    # 常時インデックス
+    # ------------------------------------------------------------------
+    
+    start_index = Signal(list, bool)
+    
+    def _setup_index(self) -> None:
+        self._index_thread = QThread(self)
+        self._index_worker = IndexWorker()
+        self._index_worker.moveToThread(self._index_thread)
+        self.start_index.connect(self._index_worker.run)
+        self._index_worker.progress.connect(self._on_index_progress)
+        self._index_worker.finished.connect(self._on_index_finished)
+        self._index_thread.start()
+        self._index_running = False
+        self._index_pending = False
+        self._index_status = IndexStatus()
+        
+        self._index_timer = QTimer(self)
+        self._index_timer.timeout.connect(self.update_index)
+        self._apply_index_settings()
+        QTimer.singleShot(4000, self.update_index)
+    
+    def _apply_index_settings(self) -> None:
+        self._index_timer.start(max(1, self._settings.index_interval_min) * 60 * 1000)
+        self._show_index_status()
+    
+    def update_index(self) -> None:
+        """登録フォルダの索引を更新する（検索中は検索のあとに回す）"""
+        if not self._settings.index_enabled or not self._settings.index_folders:
+            self._show_index_status()
+            return
+        if self._search_worker is not None or self._index_running:
+            self._index_pending = True
+            return
+        self._index_running = True
+        self._index_pending = False
+        self.start_index.emit(self._settings.index_folders, True)
+    
+    def _on_index_progress(self, status: IndexStatus) -> None:
+        self._index_status = status
+        self._show_index_status()
+    
+    def _on_index_finished(self, status: IndexStatus) -> None:
+        self._index_running = False
+        self._index_status = status
+        self._show_index_status()
+        if self._index_pending:
+            QTimer.singleShot(1000, self.update_index)
+    
+    def _show_index_status(self) -> None:
+        status = self._index_status
+        if not self._settings.index_enabled:
+            text = "インデックス: オフ"
+        elif not self._settings.index_folders:
+            text = "インデックス: 対象フォルダなし"
+        elif status.running and status.total:
+            text = f"インデックス更新中 {status.done:,} / {status.total:,}"
+        elif status.running:
+            text = "インデックスを確認中…"
+        elif status.last_finished:
+            text = f"インデックス: {status.indexed_files:,} ファイル（{time.strftime('%H:%M', time.localtime(status.last_finished))} 更新）"
+        else:
+            text = "インデックス: 準備中"
+        self._status.set_index(text)
+        if hasattr(self, "_tray") and self._tray is not None:
+            self._tray.setToolTip(f"Unified File Search\n{text}")
+    
+    def _remember_index_folder(self, folder: str) -> None:
+        """検索したフォルダを常時インデックスに加える（設定で無効にできる）"""
+        if not self._settings.index_auto_add:
+            return
+        folders = self._settings.index_folders
+        normalized = str(Path(folder))
+        # すでに登録フォルダの中にあるなら追加しない
+        for existing in folders:
+            try:
+                Path(normalized).relative_to(existing)
+                return
+            except ValueError:
+                pass
+        self._settings.index_folders = (folders + [normalized])[-10:]
+    
+    # ------------------------------------------------------------------
+    # タスクトレイ
+    # ------------------------------------------------------------------
+    
+    def _setup_tray(self) -> None:
+        self._tray: Optional[QSystemTrayIcon] = None
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        tray = QSystemTrayIcon(icons.app_icon(), self)
+        menu = QMenu(self)
+        menu.addAction(icons.icon("search"), "開く", self.show_from_tray)
+        menu.addAction(icons.icon("database"), "インデックスを今すぐ更新", self.update_index)
+        menu.addSeparator()
+        menu.addAction("終了", self.quit_app)
+        tray.setContextMenu(menu)
+        tray.activated.connect(
+            lambda reason: self.show_from_tray()
+            if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick)
+            else None
+        )
+        tray.show()
+        self._tray = tray
+        self._show_index_status()
+    
+    def tray_icon(self) -> Optional[QSystemTrayIcon]:
+        return self._tray
+    
+    def show_from_tray(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+    
+    def quit_app(self) -> None:
+        self._quitting = True
+        self.close()
+    
     def closeEvent(self, event) -> None:  # noqa: N802
+        if (
+            not self._quitting
+            and self._tray is not None
+            and self._settings.tray_on_close
+            and self._settings.index_enabled
+        ):
+            # 閉じてもタスクトレイに残り、索引の更新を続ける
+            self._save_settings()
+            self.hide()
+            event.ignore()
+            if not self._settings.tray_notice_shown:
+                self._tray.showMessage(
+                    "Unified File Search",
+                    "タスクトレイで動作を続け、インデックスを最新に保ちます。終了するにはアイコンを右クリックして「終了」を選びます。",
+                    icons.app_icon(),
+                    6000,
+                )
+                self._settings.tray_notice_shown = True
+            return
+        
+        self._index_worker.cancel()
+        self._index_timer.stop()
+        self._index_thread.quit()
+        self._index_thread.wait(5000)
+        if self._tray is not None:
+            self._tray.hide()
         self._save_settings()
         self._stop_search()
         self._preview_token += 1
@@ -652,3 +866,4 @@ class MainWindow(QMainWindow):
         shutdown_pool()
         self._logger.info("app_closed", "Application closed")
         event.accept()
+        QApplication.instance().quit()

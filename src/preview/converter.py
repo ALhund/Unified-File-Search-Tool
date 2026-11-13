@@ -27,7 +27,8 @@ from typing import Optional
 from src.common.config import get_config
 from src.common.logger import get_logger
 
-OFFICE_EXTENSIONS = {"docx", "xlsx", "xlsm", "pptx"}
+OFFICE_EXTENSIONS = {"docx", "xlsx", "xlsm", "pptx", "xls", "doc", "ppt"}
+SPREADSHEET_EXTENSIONS = {"xlsx", "xlsm", "xls"}
 
 # 同時に複数の変換を走らせない（LibreOfficeのプロファイル競合を避ける）
 _convert_lock = threading.Lock()
@@ -70,6 +71,9 @@ def find_libreoffice() -> Optional[str]:
 # 拡張子 → Microsoft Office のアプリ（COM の ProgID）
 OFFICE_PROGIDS = {
     "xlsx": "Excel.Application",
+    "xls": "Excel.Application",
+    "doc": "Word.Application",
+    "ppt": "PowerPoint.Application",
     "xlsm": "Excel.Application",
     "docx": "Word.Application",
     "pptx": "PowerPoint.Application",
@@ -165,6 +169,9 @@ def convert_to_pdf(src: Path) -> ConversionResult:
                     if backend == "msoffice":
                         _convert_with_msoffice(work_src, out_pdf, timeout)
                     else:
+                        if work_src.suffix.lower() == ".xls":
+                            # 旧形式の Excel は一度 .xlsx にしてから、枠線・行列番号の設定を入れる
+                            work_src = _xls_to_patched_xlsx(work_src, work, timeout)
                         _convert_with_libreoffice(work_src, work, timeout)
                     
                     if out_pdf.exists() and out_pdf.stat().st_size > 0:
@@ -288,7 +295,22 @@ def _hidden_window_flags() -> int:
     return getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
-def _convert_with_libreoffice(work_src: Path, out_dir: Path, timeout: int) -> None:
+def _xls_to_patched_xlsx(work_src: Path, work: Path, timeout: int) -> Path:
+    staging = work / "xlsx"
+    staging.mkdir(exist_ok=True)
+    _convert_with_libreoffice(work_src, staging, timeout, target="xlsx")
+    converted = staging / (work_src.stem + ".xlsx")
+    if not converted.exists():
+        return work_src
+    patched = work / (work_src.stem + ".xlsx")
+    try:
+        _copy_xlsx_with_gridlines(converted, patched)
+    except Exception:
+        shutil.copyfile(converted, patched)
+    return patched
+
+
+def _convert_with_libreoffice(work_src: Path, out_dir: Path, timeout: int, target: str = "pdf") -> None:
     soffice = find_libreoffice()
     if not soffice:
         raise RuntimeError("LibreOfficeが見つかりません")
@@ -304,7 +326,7 @@ def _convert_with_libreoffice(work_src: Path, out_dir: Path, timeout: int) -> No
         "--nolockcheck",
         f"-env:UserInstallation={profile.resolve().as_uri()}",
         "--convert-to",
-        "pdf",
+        target,
         "--outdir",
         str(out_dir),
         str(work_src),

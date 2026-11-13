@@ -37,7 +37,7 @@ class Config:
     logs_max_lines_per_file: int = 1000
     logging_level: str = "Information"
     target_extensions: list[str] = field(default_factory=lambda: [
-        "pptx", "xlsx", "xlsm", "docx", "pdf", "md", "txt", "log"
+        "pptx", "ppt", "xlsx", "xlsm", "xls", "docx", "doc", "pdf", "md", "txt", "log"
     ])
     search_defaults: SearchDefaults = field(default_factory=SearchDefaults)
     regex_options: RegexOptions = field(default_factory=RegexOptions)

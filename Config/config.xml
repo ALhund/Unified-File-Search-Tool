@@ -39,9 +39,12 @@
     <!-- 対象拡張子 -->
     <target_extensions>
         <ext>pptx</ext>
+        <ext>ppt</ext>
         <ext>xlsx</ext>
         <ext>xlsm</ext>
+        <ext>xls</ext>
         <ext>docx</ext>
+        <ext>doc</ext>
         <ext>pdf</ext>
         <ext>md</ext>
         <ext>txt</ext>

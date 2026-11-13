@@ -127,6 +127,7 @@ _ICONS: dict[str, str] = {
     "exclude": '<circle cx="12" cy="12" r="8"/><path d="M6.4 17.6L17.6 6.4"/>',
     "hash": '<path d="M9.5 4L7.5 20M16.5 4l-2 16M4.5 9h15M4 15h15"/>',
     "key": '<circle cx="8" cy="15.5" r="4.2"/><path d="M11 12.5l8.5-8.5M16.2 7.3l2.6 2.6M13.8 9.7l2 2"/>',
+    "export": '<path d="M12 4v10.5M7.5 10L12 14.5 16.5 10"/><path d="M4.5 15.5v2.5a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-2.5"/>',
     "plus": '<path d="M12 5v14M5 12h14"/>',
     "minus": '<path d="M5 12h14"/>',
     "palette": (
@@ -147,6 +148,9 @@ _ICONS: dict[str, str] = {
 FILE_TYPES: dict[str, tuple[str, str]] = {
     "xlsx": ("#1F7A4A", "XLS"),
     "xlsm": ("#1F7A4A", "XLSM"),
+    "xls": ("#1F7A4A", "XLS"),
+    "doc": ("#2B5FB4", "DOC"),
+    "ppt": ("#C2511F", "PPT"),
     "docx": ("#2B5FB4", "DOC"),
     "pptx": ("#C2511F", "PPT"),
     "pdf": ("#CF3A2E", "PDF"),

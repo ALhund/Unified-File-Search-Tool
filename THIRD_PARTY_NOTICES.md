@@ -17,6 +17,8 @@ Unified File Search は、以下のオープンソース ソフトウェアを�
 | [python-docx](https://github.com/python-openxml/python-docx) | Word ファイルの読み取り | MIT |
 | [python-pptx](https://github.com/scanny/python-pptx) | PowerPoint ファイルの読み取り | MIT |
 | [openpyxl](https://foss.heptapod.net/openpyxl/openpyxl) / et_xmlfile | Excel ファイルの読み取り | MIT |
+| [xlrd](https://github.com/python-excel/xlrd) | Excel 97-2003（.xls）の読み取り | BSD-3-Clause |
+| [olefile](https://github.com/decalage2/olefile) | Word/PowerPoint 97-2003（.doc/.ppt）の読み取り | BSD-2-Clause |
 | [lxml](https://lxml.de/) | XML の解析 | BSD-3-Clause |
 | [XlsxWriter](https://github.com/jmcnamara/XlsxWriter)（python-pptx が使用） | — | BSD-2-Clause |
 | [Pillow](https://python-pillow.org/) | 画像の変換 | MIT-CMU（HPND） |

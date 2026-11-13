@@ -12,8 +12,11 @@ _STARTED = time.perf_counter()
 sys.path.insert(0, str(Path(__file__).parent))
 
 
-def main() -> int:
-    """メイン関数"""
+def main(background: bool = False) -> int:
+    """メイン関数
+    
+    background: ウィンドウを出さず、タスクトレイに常駐して起動する（サインイン時の自動起動）
+    """
     # Qt関連は main() の中で読み込む。
     # 検索用のワーカープロセスはこのファイルを再読み込みするため、
     # トップレベルで読み込むとワーカーごとにQtを起動してしまう。
@@ -33,6 +36,7 @@ def main() -> int:
     )
     
     app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)  # タスクトレイに常駐できるようにする
     app.setApplicationName(APP_NAME)
     app.setApplicationDisplayName(APP_NAME)
     app.setOrganizationName("UnifiedFileSearchTool")
@@ -45,7 +49,16 @@ def main() -> int:
     
     app.setWindowIcon(icons.app_icon())
     
-    get_config()
+    config = get_config()
+    
+    # 二重起動の防止（起動中ならそのウィンドウを前面に出して終わる）
+    from src.ui.single_instance import SingleInstance
+    instance = SingleInstance(config.get_user_base())
+    if not instance.acquire():
+        if not background:
+            instance.notify_running()
+        return 0
+    
     settings = UserSettings()
     apply_to_config(settings)
     
@@ -60,7 +73,9 @@ def main() -> int:
     from src.ui import MainWindow
     
     window = MainWindow(settings)
-    window.show()
+    instance.listen(window.show_from_tray)
+    if not background or window.tray_icon() is None:
+        window.show()
     
     def startup_done() -> None:
         # 起動にかかった時間を記録する（遅いと言われたときの調査用）
@@ -73,6 +88,7 @@ def main() -> int:
     QTimer.singleShot(0, startup_done)
     
     exit_code = app.exec()
+    instance.release()
     
     logger.info("application_exiting", "Application exiting", exit_code=exit_code)
     return exit_code
@@ -88,7 +104,7 @@ def dispatch(argv: list[str]) -> int:
         from src.selftest import run
         report = Path(argv[2]) if len(argv) >= 3 else Path("selftest.json")
         return run(report)
-    return main()
+    return main(background="--background" in argv[1:])
 
 
 if __name__ == "__main__":

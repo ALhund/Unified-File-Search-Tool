@@ -53,6 +53,8 @@ class MetadataReader:
                 return self._read_pptx(file_path)
             elif ext == "pdf":
                 return self._read_pdf(file_path)
+            elif ext in ("xls", "doc", "ppt"):
+                return self._read_ole(file_path)
             else:
                 # テキスト系はファイルシステムのタイムスタンプのみ
                 return self._read_filesystem(file_path)
@@ -112,6 +114,30 @@ class MetadataReader:
             modified=props.modified,
             last_modified_by=props.last_modified_by,
             title=props.title,
+        )
+    
+    def _read_ole(self, file_path: Path) -> FileMetadata:
+        """旧形式の Office（OLE 複合ファイル）のプロパティ"""
+        import olefile
+        
+        with olefile.OleFileIO(str(file_path)) as ole:
+            meta = ole.get_metadata()
+        
+        def text(value) -> Optional[str]:
+            if isinstance(value, bytes):
+                for encoding in ("utf-8", "cp932", "latin-1"):
+                    try:
+                        return value.decode(encoding).strip("\x00 ") or None
+                    except UnicodeDecodeError:
+                        continue
+            return value or None
+        
+        return FileMetadata(
+            author=text(meta.author),
+            created=meta.create_time,
+            modified=meta.last_saved_time,
+            last_modified_by=text(meta.last_saved_by),
+            title=text(meta.title),
         )
     
     def _read_pdf(self, file_path: Path) -> FileMetadata:

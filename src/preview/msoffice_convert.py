@@ -44,6 +44,8 @@ def convert_excel(src: str, dst: str) -> None:
                     setup.Zoom = False
                     setup.FitToPagesWide = 1
                     setup.FitToPagesTall = False  # 縦は必要なだけページを使う
+                    setup.PrintGridlines = True  # 画面で開いたときと同じく枠線を出す
+                    setup.PrintHeadings = True  # 行番号・列番号を出す
                 except Exception:
                     pass  # 保護されたシート等は既定のページ設定のまま出力する
             book.ExportAsFixedFormat(XL_TYPE_PDF, dst)
@@ -89,6 +91,9 @@ def convert_powerpoint(src: str, dst: str) -> None:
 
 CONVERTERS = {
     ".xlsx": convert_excel,
+    ".xls": convert_excel,
+    ".doc": convert_word,
+    ".ppt": convert_powerpoint,
     ".xlsm": convert_excel,
     ".docx": convert_word,
     ".pptx": convert_powerpoint,

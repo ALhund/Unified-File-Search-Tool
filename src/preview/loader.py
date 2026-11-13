@@ -75,7 +75,7 @@ def build_preview(
         if pdf_path is not None:
             try:
                 document = PageDocument(
-                    pdf_path, fit_to_content=extension in ("xlsx", "xlsm")
+                    pdf_path, fit_to_content=extension in ("xlsx", "xlsm", "xls")
                 )
                 _apply_labels(file_info, document)
                 hits, truncated = (
@@ -133,6 +133,24 @@ def _file_info_text(file_info: FileInfo) -> str:
     return "  |  ".join(parts)
 
 
+def _visible_sheets(path: Path) -> list[str]:
+    """表示されているシートの名前（非表示のシートは PDF に出力されない）"""
+    if path.suffix.lower() == ".xls":
+        import xlrd
+        book = xlrd.open_workbook(str(path), on_demand=True)
+        try:
+            return [book.sheet_by_index(i).name for i in range(book.nsheets)
+                    if book.sheet_by_index(i).visibility == 0]
+        finally:
+            book.release_resources()
+    from openpyxl import load_workbook
+    workbook = load_workbook(str(path), read_only=True)
+    try:
+        return [ws.title for ws in workbook.worksheets if ws.sheet_state == "visible"]
+    finally:
+        workbook.close()
+
+
 def _apply_labels(file_info: FileInfo, document: PageDocument) -> None:
     """変換後のページに「シート名」「スライド番号」を対応付ける
     
@@ -141,20 +159,14 @@ def _apply_labels(file_info: FileInfo, document: PageDocument) -> None:
     extension = file_info.extension
     count = document.page_count
     try:
-        if extension == "pptx":
+        if extension in ("pptx", "ppt"):
             if load_content(file_info).total_slides == count:
                 document.labels = [f"スライド {i + 1}" for i in range(count)]
             return
-        if extension not in ("xlsx", "xlsm"):
+        if extension not in ("xlsx", "xlsm", "xls"):
             return
         
-        from openpyxl import load_workbook
-        
-        workbook = load_workbook(str(file_info.path), read_only=True)
-        try:
-            visible = [ws.title for ws in workbook.worksheets if ws.sheet_state == "visible"]
-        finally:
-            workbook.close()
+        visible = _visible_sheets(file_info.path)
         
         # シートは複数ページにまたがることがあるので、各シートの先頭ページを求める
         starts = document.sheet_start_pages()

@@ -120,6 +120,69 @@ class UserSettings:
     def workers(self, value: int) -> None:
         self._set("search/workers", int(value))
     
+    @property
+    def export_folder(self) -> str:
+        return self._get("search/export_folder", "", str)
+    
+    @export_folder.setter
+    def export_folder(self, value: str) -> None:
+        self._set("search/export_folder", value)
+    
+    # --- 常時インデックス ---
+    @property
+    def index_enabled(self) -> bool:
+        return self._get("index/enabled", True, bool)
+    
+    @index_enabled.setter
+    def index_enabled(self, value: bool) -> None:
+        self._set("index/enabled", value)
+    
+    @property
+    def index_folders(self) -> list[str]:
+        return self._get("index/folders", [], list)
+    
+    @index_folders.setter
+    def index_folders(self, folders: list[str]) -> None:
+        unique: list[str] = []
+        for folder in folders:
+            if folder and folder not in unique:
+                unique.append(folder)
+        self._set("index/folders", unique)
+    
+    @property
+    def index_auto_add(self) -> bool:
+        """検索したフォルダを自動で常時インデックスに加える"""
+        return self._get("index/auto_add", True, bool)
+    
+    @index_auto_add.setter
+    def index_auto_add(self, value: bool) -> None:
+        self._set("index/auto_add", value)
+    
+    @property
+    def index_interval_min(self) -> int:
+        return self._get("index/interval_min", 15, int)
+    
+    @index_interval_min.setter
+    def index_interval_min(self, value: int) -> None:
+        self._set("index/interval_min", int(value))
+    
+    @property
+    def tray_on_close(self) -> bool:
+        """閉じてもタスクトレイに常駐して索引を更新し続ける"""
+        return self._get("app/tray_on_close", True, bool)
+    
+    @tray_on_close.setter
+    def tray_on_close(self, value: bool) -> None:
+        self._set("app/tray_on_close", value)
+    
+    @property
+    def tray_notice_shown(self) -> bool:
+        return self._get("app/tray_notice_shown", False, bool)
+    
+    @tray_notice_shown.setter
+    def tray_notice_shown(self, value: bool) -> None:
+        self._set("app/tray_notice_shown", value)
+    
     # --- プレビュー ---
     @property
     def converter(self) -> Optional[str]:

@@ -39,6 +39,10 @@ class StatusBar(QFrame):
         self._time = QLabel("")
         layout.addWidget(self._time)
         
+        self._index = QLabel("")
+        self._index.setToolTip("常時インデックスの状態（設定で対象フォルダを変更できます）")
+        layout.addWidget(self._index)
+        
         self._engine = QLabel("")
         layout.addWidget(self._engine)
         
@@ -54,6 +58,9 @@ class StatusBar(QFrame):
         self._message.setText(message)
         self._icon_name = icon_name
         self._update_icon()
+    
+    def set_index(self, text: str) -> None:
+        self._index.setText(text)
     
     def set_engine(self, text: str) -> None:
         self._engine.setText(text)

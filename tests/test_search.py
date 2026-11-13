@@ -253,3 +253,28 @@ def test_powerpoint_chart_text_is_searchable(tmp_path):
     
     block = next(b for b in extract_file(str(path)).blocks if b.kind == "chart")
     assert "バナナ月別出荷" in block.text and "出荷数" in block.text and "4月" in block.text
+
+
+def test_export_results_to_excel(sample_dir, tmp_path):
+    from openpyxl import load_workbook
+    from src.export import export_results
+    
+    files = FileEnumerator().enumerate(sample_dir).files
+    results = []
+    options = SearchOptions(query="バナナ")
+    Searcher().search_files(files, options, result_callback=results.append)
+    (sample_dir / "broken.xlsx").write_bytes(b"x")
+    destination = tmp_path / "out" / "結果.xlsx"
+    count, hits = export_results(destination, results, options, sample_dir)
+    assert count == len(results) and hits == sum(r.match_count for r in results)
+    
+    book = load_workbook(destination, rich_text=True)
+    assert book.sheetnames == ["ファイル一覧", "ヒット箇所", "検索条件"]
+    sheet = book["ファイル一覧"]
+    names = [sheet.cell(row=r, column=2).value for r in range(2, sheet.max_row + 1)]
+    assert set(names) == {r.file_info.name for r in results}
+    assert sheet.cell(row=2, column=2).hyperlink.target.startswith("file:")
+    hits_sheet = book["ヒット箇所"]
+    assert hits_sheet.max_row - 1 == hits
+    assert "バナナ" in str(hits_sheet.cell(row=2, column=4).value)
+    assert book["検索条件"]["B2"].value == "バナナ"

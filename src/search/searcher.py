@@ -2,7 +2,9 @@
 
 ファイル内容を検索し、マッチ箇所を返す。
 
-- テキスト抽出はキャッシュ（SQLite）を優先し、未キャッシュ分は複数プロセスで並列に抽出する
+- 検索インデックス（SQLite の全文検索）で、検索語を含む可能性のあるファイルだけに絞り込む
+- 各ファイルの「抽出結果の読み込み（無ければ抽出）＋照合」をワーカープロセスで並列に行う
+  （ハイパースレッディングで増えた分も含め、すべての論理プロセッサを使う）
 - 照合は全角/半角・大文字/小文字を吸収して行う
 """
 
@@ -10,7 +12,7 @@ import multiprocessing
 import os
 import threading
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from typing import Callable, Optional
@@ -19,7 +21,8 @@ from src.common.config import get_config
 from src.common.logger import get_logger
 from src.enumeration import FileInfo
 from src.extraction import ExtractedContent, extract_file
-from src.extraction.cache import get_extraction_cache
+from src.common.textnorm import fold_query
+from src.extraction.cache import get_extraction_cache, read_cached
 from src.search.query import CompiledQuery, SearchOptions
 
 # マッチ前後に付ける文脈の文字数
@@ -79,6 +82,8 @@ class SearchSummary:
     total_matches: int = 0
     error_files: int = 0
     cache_hits: int = 0
+    skipped_by_index: int = 0  # 索引で「含まない」と分かり、開かずに済んだファイル数
+    workers: int = 1
     elapsed: float = 0.0
     cancelled: bool = False
 
@@ -149,32 +154,107 @@ def _context_after(text: str, end: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 並列抽出用のプロセスプール（アプリ全体で使い回す）
+# ワーカープロセスで動く処理
+# ---------------------------------------------------------------------------
+
+_worker_query: Optional[tuple] = None
+
+
+def _compiled(options: SearchOptions) -> CompiledQuery:
+    """ワーカー内で検索条件のコンパイル結果を使い回す"""
+    global _worker_query
+    key = repr(options)
+    if _worker_query is None or _worker_query[0] != key:
+        _worker_query = (key, CompiledQuery(options))
+    return _worker_query[1]
+
+
+def process_file(
+    path: str,
+    mtime_ns: int,
+    size: int,
+    db_path: Optional[str],
+    options: Optional[SearchOptions],
+    max_matches: int,
+) -> dict:
+    """1ファイルを処理する（索引にあれば読み込み、無ければ抽出し、検索条件があれば照合する）
+    
+    Returns:
+        {"error", "matches", "truncated", "content"（新しく抽出した場合だけ）}
+    """
+    content = read_cached(db_path, path, mtime_ns, size) if db_path else None
+    extracted = content is None
+    if content is None:
+        content = extract_file(path)
+    result = {
+        "error": content.error,
+        "matches": [],
+        "truncated": False,
+        "content": content if extracted and not content.error else None,
+    }
+    if options is not None and not content.error:
+        result["matches"], result["truncated"] = search_content(content, _compiled(options), max_matches)
+    return result
+
+
+def _warm() -> int:
+    """ワーカーの起動と必要なモジュールの読み込みを先に済ませる"""
+    import importlib
+    for name in ("src.extraction.office_extractor", "src.extraction.pdf_extractor", "docx", "openpyxl", "pptx"):
+        importlib.import_module(name)
+    return os.getpid()
+
+
+# ---------------------------------------------------------------------------
+# プロセスプール（アプリ全体で使い回す）
 # ---------------------------------------------------------------------------
 
 _pool: Optional[ProcessPoolExecutor] = None
+_pool_workers = 0
 _pool_lock = threading.Lock()
+MAX_WORKERS = 32
 
 
-def _worker_count() -> int:
+def logical_processors() -> int:
+    """論理プロセッサ数（ハイパースレッディングで増えた分を含む）"""
+    return os.cpu_count() or 2
+
+
+def worker_count() -> int:
     configured = get_config().search_workers
     if configured > 0:
-        return configured
-    return max(1, min(8, (os.cpu_count() or 2) - 1))
+        return min(configured, MAX_WORKERS)
+    # 画面の操作用に1つ残し、それ以外の論理プロセッサをすべて使う
+    return max(1, min(MAX_WORKERS, logical_processors() - 1))
 
 
-def _get_pool() -> Optional[ProcessPoolExecutor]:
-    global _pool
+def get_pool() -> Optional[ProcessPoolExecutor]:
+    global _pool, _pool_workers
     with _pool_lock:
+        workers = worker_count()
+        if _pool is not None and _pool_workers != workers:
+            _pool.shutdown(wait=False, cancel_futures=True)
+            _pool = None
         if _pool is None:
-            workers = _worker_count()
             if workers <= 1:
                 return None
             _pool = ProcessPoolExecutor(
                 max_workers=workers,
                 mp_context=multiprocessing.get_context("spawn"),
             )
+            _pool_workers = workers
         return _pool
+
+
+def warm_pool() -> None:
+    """起動直後にワーカーを立ち上げておく（最初の検索を速くする）"""
+    try:
+        pool = get_pool()
+        if pool is not None:
+            for _ in range(_pool_workers):
+                pool.submit(_warm)
+    except Exception:
+        pass
 
 
 def shutdown_pool() -> None:
@@ -187,7 +267,7 @@ def shutdown_pool() -> None:
 
 
 def load_content(file_info: FileInfo) -> ExtractedContent:
-    """キャッシュを使ってファイルの内容を取得する（プレビュー用）"""
+    """索引を使ってファイルの内容を取得する（プレビュー用）"""
     cache = get_extraction_cache()
     if cache is not None:
         cached = cache.get(file_info.path, file_info.mtime_ns, file_info.size)
@@ -196,7 +276,78 @@ def load_content(file_info: FileInfo) -> ExtractedContent:
     content = extract_file(str(file_info.path))
     if cache is not None:
         cache.put(file_info.path, file_info.mtime_ns, file_info.size, content)
+        cache.flush()
     return content
+
+
+def run_files(
+    files: list[FileInfo],
+    options: Optional[SearchOptions],
+    max_matches: int,
+    on_result: Callable[[FileInfo, dict], None],
+    cancelled: Callable[[], bool],
+    fresh: set[str],
+    max_in_flight: Optional[int] = None,
+) -> None:
+    """ファイルをワーカーで並列に処理する（件数が少なければこのプロセスで処理する）
+    
+    fresh: 索引が最新のファイル（ワーカーが索引から読む）
+    max_in_flight: 同時に処理する数の上限（バックグラウンドの索引更新で負荷を抑えるため）
+    """
+    cache = get_extraction_cache()
+    db_path = str(cache.db_path) if cache is not None else None
+    
+    def args(f: FileInfo):
+        return (str(f.path), f.mtime_ns, f.size, db_path if str(f.path) in fresh else None, options, max_matches)
+    
+    pool = get_pool() if len(files) >= PARALLEL_THRESHOLD else None
+    remaining = list(files)
+    if pool is not None:
+        limit = max_in_flight or (_pool_workers * 4)
+        queue = iter(files)
+        in_flight: dict = {}
+        done_paths: set[str] = set()
+        try:
+            def fill() -> None:
+                while len(in_flight) < limit:
+                    f = next(queue, None)
+                    if f is None:
+                        return
+                    in_flight[pool.submit(process_file, *args(f))] = f
+            
+            fill()
+            while in_flight:
+                if cancelled():
+                    for future in in_flight:
+                        future.cancel()
+                    return
+                done, _ = wait(list(in_flight), timeout=0.2, return_when=FIRST_COMPLETED)
+                for future in done:
+                    f = in_flight.pop(future)
+                    try:
+                        result = future.result()
+                    except BrokenProcessPool:
+                        raise
+                    except Exception as e:
+                        result = {"error": str(e) or type(e).__name__, "matches": [], "truncated": False, "content": None}
+                    done_paths.add(str(f.path))
+                    on_result(f, result)
+                fill()
+            return
+        except BrokenProcessPool as e:
+            # ワーカーが異常終了した場合は残りをこのプロセスで処理する
+            get_logger("search").warning("pool", "Worker process pool is broken", exception_message=str(e))
+            shutdown_pool()
+            remaining = [f for f in files if str(f.path) not in done_paths]
+    
+    for f in remaining:
+        if cancelled():
+            return
+        try:
+            result = process_file(*args(f))
+        except Exception as e:
+            result = {"error": str(e) or type(e).__name__, "matches": [], "truncated": False, "content": None}
+        on_result(f, result)
 
 
 class Searcher:
@@ -241,7 +392,7 @@ class Searcher:
             max_matches = self._config.search_max_matches_per_file
         cache = get_extraction_cache()
         
-        summary = SearchSummary(total_files=len(files))
+        summary = SearchSummary(total_files=len(files), workers=worker_count())
         total_bytes = sum(f.size for f in files)
         processed = {"bytes": 0, "files": 0}
         start_time = time.time()
@@ -254,51 +405,49 @@ class Searcher:
             use_regex=options.use_regex,
         )
         
-        def handle(file_info: FileInfo, content: ExtractedContent) -> None:
-            result = SearchResult(file_info=file_info)
-            if content.error:
-                result.error = content.error
-                summary.error_files += 1
-            else:
-                result.matches, result.truncated = search_content(content, query, max_matches)
-                if result.matches:
-                    summary.matched_files += 1
-                    summary.total_matches += result.match_count
-            
-            if (result.matches or result.error) and result_callback:
-                result_callback(result)
-            
+        def progress(file_info: FileInfo) -> None:
             processed["bytes"] += file_info.size
             processed["files"] += 1
             if progress_callback:
                 progress_callback(processed["bytes"], total_bytes, processed["files"], len(files))
         
-        # 1. キャッシュ済みのファイルを先に処理する（すぐ結果が出る）
-        pending: list[FileInfo] = []
+        # 1. 索引で絞り込む（索引が最新のファイルのうち、検索語を含まないものは開かない）
+        fresh = cache.fresh_paths(files) if cache is not None else set()
+        summary.cache_hits = len(fresh)
+        candidates = None
+        if cache is not None and fresh and not options.use_regex:
+            terms = [fold_query(term, True, True) for term in query.terms]
+            candidates = cache.candidates(terms, query.require_all)
+        
+        targets: list[FileInfo] = []
         for file_info in files:
-            if self._cancelled:
-                break
-            cached = cache.get(file_info.path, file_info.mtime_ns, file_info.size) if cache else None
-            if cached is not None:
-                summary.cache_hits += 1
-                handle(file_info, cached)
+            path = str(file_info.path)
+            if candidates is not None and path in fresh and path not in candidates:
+                summary.skipped_by_index += 1
+                progress(file_info)
             else:
-                pending.append(file_info)
+                targets.append(file_info)
         
-        # 2. 未キャッシュ分を抽出する（件数が多ければ並列）
-        def handle_extracted(file_info: FileInfo, content: ExtractedContent) -> None:
-            if cache is not None:
-                cache.put(file_info.path, file_info.mtime_ns, file_info.size, content)
-            handle(file_info, content)
+        # 2. 残りを並列に処理する（大きいファイルから投入して、終盤の待ちを短くする）
+        targets.sort(key=lambda f: (str(f.path) in fresh, -f.size))
         
-        if pending and not self._cancelled:
-            # 大きいファイルから投入して、並列処理の終盤の待ちを短くする
-            pending.sort(key=lambda f: -f.size)
-            remaining = self._extract_parallel(pending, handle_extracted)
-            for file_info in remaining:
-                if self._cancelled:
-                    break
-                handle_extracted(file_info, extract_file(str(file_info.path)))
+        def handle(file_info: FileInfo, raw: dict) -> None:
+            if raw.get("content") is not None and cache is not None:
+                cache.put(file_info.path, file_info.mtime_ns, file_info.size, raw["content"])
+            result = SearchResult(file_info=file_info)
+            if raw.get("error"):
+                result.error = raw["error"]
+                summary.error_files += 1
+            else:
+                result.matches, result.truncated = raw["matches"], raw["truncated"]
+                if result.matches:
+                    summary.matched_files += 1
+                    summary.total_matches += result.match_count
+            if (result.matches or result.error) and result_callback:
+                result_callback(result)
+            progress(file_info)
+        
+        run_files(targets, options, max_matches, handle, lambda: self._cancelled, fresh)
         
         if cache is not None:
             cache.flush()
@@ -311,47 +460,9 @@ class Searcher:
             matched_files=summary.matched_files,
             total_matches=summary.total_matches,
             cache_hits=summary.cache_hits,
+            skipped_by_index=summary.skipped_by_index,
+            workers=summary.workers,
             cancelled=summary.cancelled,
             elapsed_ms=int(summary.elapsed * 1000),
         )
         return summary
-    
-    def _extract_parallel(
-        self,
-        files: list[FileInfo],
-        handle: Callable[[FileInfo, ExtractedContent], None],
-    ) -> list[FileInfo]:
-        """プロセスプールで抽出する。処理できなかったファイルを返す（直列処理に回す）"""
-        if len(files) < PARALLEL_THRESHOLD:
-            return files
-        try:
-            pool = _get_pool()
-        except Exception as e:
-            self._logger.warning("pool", "Failed to start worker processes", exception_message=str(e))
-            return files
-        if pool is None:
-            return files
-        
-        done: set[int] = set()
-        try:
-            futures = {pool.submit(extract_file, str(f.path)): i for i, f in enumerate(files)}
-            for future in as_completed(futures):
-                index = futures[future]
-                if self._cancelled:
-                    for f in futures:
-                        f.cancel()
-                    return []
-                try:
-                    content = future.result()
-                except BrokenProcessPool:
-                    raise
-                except Exception as e:
-                    content = ExtractedContent(file_path=files[index].path, error=str(e) or type(e).__name__)
-                done.add(index)
-                handle(files[index], content)
-        except BrokenProcessPool as e:
-            # ワーカーが異常終了した場合は残りを直列で処理する
-            self._logger.warning("pool", "Worker process pool is broken", exception_message=str(e))
-            shutdown_pool()
-        
-        return [f for i, f in enumerate(files) if i not in done]

@@ -31,9 +31,9 @@ from src.ui.widgets.common import chip, divider, ghost_button, label, primary_bu
 
 # ファイル種類のまとまり: (キー, 表示名, 拡張子, アイコンに使う拡張子)
 TYPE_GROUPS: list[tuple[str, str, tuple[str, ...], str]] = [
-    ("excel", "Excel", ("xlsx", "xlsm"), "xlsx"),
-    ("word", "Word", ("docx",), "docx"),
-    ("powerpoint", "PowerPoint", ("pptx",), "pptx"),
+    ("excel", "Excel", ("xlsx", "xlsm", "xls"), "xlsx"),
+    ("word", "Word", ("docx", "doc"), "docx"),
+    ("powerpoint", "PowerPoint", ("pptx", "ppt"), "pptx"),
     ("pdf", "PDF", ("pdf",), "pdf"),
     ("text", "テキスト", ("txt", "md", "log"), "txt"),
 ]

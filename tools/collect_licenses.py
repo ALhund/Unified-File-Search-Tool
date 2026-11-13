@@ -25,6 +25,8 @@ ROOT_PACKAGES = [
     "charset-normalizer",
     "pillow",
     "cryptography",
+    "xlrd",
+    "olefile",
     "pywin32",
 ]
 LICENSE_FILE = re.compile(r"(LICEN[CS]E|COPYING|NOTICE|AUTHORS|BUILD_LICENSES)", re.IGNORECASE)

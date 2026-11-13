@@ -364,6 +364,7 @@ class ResultsPanel(QWidget):
     
     file_selected = Signal(object)  # Entry
     back_to_listing = Signal()
+    export_requested = Signal()
     browse_requested = Signal()
     
     def __init__(self, parent=None):
@@ -395,6 +396,11 @@ class ResultsPanel(QWidget):
         header.addWidget(self._title)
         self._summary = label("", "Secondary")
         header.addWidget(self._summary, 1)
+        
+        self._export_btn = ghost_button("export", "検索結果を Excel に書き出す (Ctrl+S)", size=16)
+        self._export_btn.clicked.connect(self.export_requested.emit)
+        self._export_btn.hide()
+        header.addWidget(self._export_btn)
         
         self._back_btn = ghost_button("list", "フォルダ内のファイル一覧に戻す", size=16)
         self._back_btn.clicked.connect(self.back_to_listing.emit)
@@ -467,6 +473,7 @@ class ResultsPanel(QWidget):
         self._model.set_files(files, root)
         self._title.setText("ファイル")
         self._back_btn.hide()
+        self._export_btn.hide()
         self._update_listing_summary()
         if files:
             self._stack.setCurrentWidget(self._list)
@@ -516,6 +523,7 @@ class ResultsPanel(QWidget):
     
     def finish_search(self, cancelled: bool) -> None:
         self._update_search_summary(running=False)
+        self._export_btn.setVisible(self._model.rowCount() > 0)
         if self._model.rowCount() == 0:
             if cancelled:
                 self.show_placeholder("stop", "検索を中断しました")
@@ -527,6 +535,15 @@ class ResultsPanel(QWidget):
                     "・「すべての語を含む」を「いずれかの語を含む」に変更<br>"
                     "・ファイルの種類とサブフォルダの設定を確認",
                 )
+    
+    def results(self) -> list:
+        """表示中の検索結果（並べ替え・絞り込みの順）"""
+        out = []
+        for row in range(self._proxy.rowCount()):
+            entry = self._proxy.index(row, 0).data(ENTRY_ROLE)
+            if entry is not None and entry.result is not None:
+                out.append(entry.result)
+        return out
     
     def is_showing_results(self) -> bool:
         return self._model.searched

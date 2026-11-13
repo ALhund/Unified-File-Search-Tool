@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -133,13 +134,74 @@ class SettingsDialog(QDialog):
             "これを超えたファイルは「50+」のように表示します。「無制限」はすべて数えます",
             self._limit_combo,
         )
+        from src.search import logical_processors
+        cpus = logical_processors()
         self._workers_combo = QComboBox()
-        self._workers_combo.addItem("自動（おすすめ）", 0)
-        for n in (1, 2, 4, 6, 8, 12, 16):
-            self._workers_combo.addItem(f"{n}", n)
+        self._workers_combo.addItem(f"自動（{max(1, cpus - 1)} 並列・おすすめ）", 0)
+        for n in sorted({1, 2, 4, 8, 12, 16, 24, 32, cpus} - {0}):
+            if n <= max(32, cpus):
+                self._workers_combo.addItem(f"{n} 並列", n)
         self._workers_combo.setCurrentIndex(max(0, self._workers_combo.findData(config.search_workers)))
-        search.add_row("同時に読み込む数", "多いほど速くなりますが、パソコンの負荷が上がります", self._workers_combo)
+        search.add_row(
+            "同時に処理する数",
+            f"このパソコンの論理プロセッサは {cpus} 個です（ハイパースレッディングで増えた分を含む）。"
+            "自動では、画面の操作用に1つ残してすべてを検索に使います",
+            self._workers_combo,
+        )
         layout.addWidget(search)
+        
+        # 常時インデックス
+        index = _Group("database", "常時インデックス")
+        self._index_check = QCheckBox("使う")
+        self._index_check.setChecked(settings.index_enabled)
+        index.add_row(
+            "インデックスを常に最新に保つ",
+            "下のフォルダを裏で定期的に読み込み、検索を一瞬で終わらせます",
+            self._index_check,
+        )
+        self._index_list = QListWidget()
+        self._index_list.setMinimumHeight(72)
+        self._index_list.setMaximumHeight(120)
+        self._index_list.addItems(settings.index_folders)
+        index.add_widget(self._index_list)
+        folder_row = QHBoxLayout()
+        add_folder = QPushButton("フォルダを追加…")
+        add_folder.clicked.connect(self._add_index_folder)
+        remove_folder = QPushButton("選んだフォルダを外す")
+        remove_folder.clicked.connect(lambda: [self._index_list.takeItem(self._index_list.row(i)) for i in self._index_list.selectedItems()])
+        folder_row.addWidget(add_folder)
+        folder_row.addWidget(remove_folder)
+        folder_row.addStretch(1)
+        holder = QWidget()
+        holder.setLayout(folder_row)
+        folder_row.setContentsMargins(0, 0, 0, 0)
+        index.add_widget(holder)
+        self._auto_add_check = QCheckBox("加える")
+        self._auto_add_check.setChecked(settings.index_auto_add)
+        index.add_row("検索したフォルダを自動で加える", "最大 10 フォルダまで", self._auto_add_check)
+        self._interval_combo = QComboBox()
+        for minutes in (5, 15, 30, 60, 180):
+            self._interval_combo.addItem(f"{minutes} 分ごと" if minutes < 60 else f"{minutes // 60} 時間ごと", minutes)
+        self._interval_combo.setCurrentIndex(max(0, self._interval_combo.findData(settings.index_interval_min)))
+        index.add_row("更新の間隔", "変更のあったファイルだけを読み込み直します", self._interval_combo)
+        self._tray_check = QCheckBox("常駐する")
+        self._tray_check.setChecked(settings.tray_on_close)
+        index.add_row("閉じてもタスクトレイに常駐", "ウィンドウを閉じても、インデックスの更新を続けます", self._tray_check)
+        from src.ui.platform import autostart_supported, is_autostart_enabled
+        self._autostart_check = QCheckBox("起動する")
+        self._autostart_check.setChecked(is_autostart_enabled())
+        self._autostart_check.setEnabled(autostart_supported())
+        index.add_row(
+            "Windows のサインイン時に起動",
+            "タスクトレイに常駐した状態で起動し、パソコンを使い始めた時点から最新に保ちます",
+            self._autostart_check,
+        )
+        self.index_update_requested = False
+        update_now = QPushButton("今すぐ更新")
+        icons.bind(update_now, "database", "text", 16)
+        update_now.clicked.connect(self._request_index_update)
+        index.add_row("インデックスの更新", "", update_now)
+        layout.addWidget(index)
         
         # プレビュー
         preview = _Group("page", "プレビュー（原本表示）")
@@ -185,8 +247,8 @@ class SettingsDialog(QDialog):
         icons.bind(clear, "trash", "danger", 16)
         clear.clicked.connect(self._clear_cache)
         cache.add_row(
-            "抽出結果・変換結果",
-            "同じファイルを2回目以降すばやく検索・表示するための保存データです",
+            "インデックス・変換結果",
+            "検索を速くするための索引と、原本表示用の変換結果です。消去すると次の検索で作り直します",
             clear,
         )
         cache.add_widget(self._cache_label)
@@ -211,6 +273,17 @@ class SettingsDialog(QDialog):
         buttons.addWidget(cancel)
         buttons.addWidget(ok)
         outer.addLayout(buttons)
+    
+    def _add_index_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "常にインデックスするフォルダ")
+        if folder:
+            existing = [self._index_list.item(i).text() for i in range(self._index_list.count())]
+            if folder not in existing:
+                self._index_list.addItem(folder)
+    
+    def _request_index_update(self) -> None:
+        self.index_update_requested = True
+        QMessageBox.information(self, "インデックス", "設定を保存したあと、インデックスの更新を始めます。")
     
     def _browse_libreoffice(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "soffice の場所", "", "soffice (soffice*);;すべてのファイル (*)")
@@ -242,6 +315,14 @@ class SettingsDialog(QDialog):
         if self._limit_combo.currentData() != get_config().search_max_matches_per_file:
             s.match_limit = self._limit_combo.currentData()
         s.workers = self._workers_combo.currentData()
+        s.index_enabled = self._index_check.isChecked()
+        s.index_folders = [self._index_list.item(i).text() for i in range(self._index_list.count())]
+        s.index_auto_add = self._auto_add_check.isChecked()
+        s.index_interval_min = self._interval_combo.currentData()
+        s.tray_on_close = self._tray_check.isChecked()
+        from src.ui.platform import autostart_supported, set_autostart
+        if autostart_supported():
+            set_autostart(self._autostart_check.isChecked())
         s.converter = self._converter_combo.currentData()
         s.libreoffice_path = self._lo_edit.text().strip()
         s.sync()
@@ -260,6 +341,7 @@ SHORTCUTS = [
         ("Enter / ダブルクリック", "アプリで開く"),
         ("Ctrl + E", "エクスプローラーで表示"),
         ("Ctrl + Shift + C", "パスをコピー"),
+        ("Ctrl + S", "検索結果を Excel に書き出す"),
     ]),
     ("プレビュー", [
         ("F3 / Shift + F3", "次 / 前のヒットへ"),
