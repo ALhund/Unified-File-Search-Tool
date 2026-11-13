@@ -16,7 +16,7 @@ env:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 45
     defaults:
       run:
         shell: pwsh
@@ -52,7 +52,8 @@ jobs:
       - name: 実行ファイルの自己診断
         run: |
           $report = Join-Path $env:RUNNER_TEMP "selftest.json"
-          $p = Start-Process -FilePath "dist\UnifiedFileSearch\UnifiedFileSearch.exe" -ArgumentList "--self-test", "`"$report`"" -Wait -PassThru
+          $p = Start-Process -FilePath "dist\UnifiedFileSearch\UnifiedFileSearch.exe" -ArgumentList "--self-test", "`"$report`"" -PassThru
+          if (-not $p.WaitForExit(300000)) { Stop-Process -Id $p.Id -Force; throw "自己診断が5分以内に終わりませんでした" }
           Get-Content $report -Encoding utf8
           if ($p.ExitCode -ne 0) { throw "自己診断に失敗しました（終了コード $($p.ExitCode)）" }
 
@@ -72,7 +73,8 @@ jobs:
           $exe = Join-Path $env:LOCALAPPDATA "Programs\UnifiedFileSearch\UnifiedFileSearch.exe"
           if (-not (Test-Path $exe)) { throw "インストール先に実行ファイルがありません: $exe" }
           $report = Join-Path $env:RUNNER_TEMP "selftest-installed.json"
-          $p = Start-Process -FilePath $exe -ArgumentList "--self-test", "`"$report`"" -Wait -PassThru
+          $p = Start-Process -FilePath $exe -ArgumentList "--self-test", "`"$report`"" -PassThru
+          if (-not $p.WaitForExit(300000)) { Stop-Process -Id $p.Id -Force; throw "インストール後の自己診断が5分以内に終わりませんでした" }
           Get-Content $report -Encoding utf8
           if ($p.ExitCode -ne 0) { throw "インストール後の自己診断に失敗しました" }
 

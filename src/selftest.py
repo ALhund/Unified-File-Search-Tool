@@ -116,7 +116,8 @@ def run(report_path: Path) -> int:
     config = get_config()
     config.search_workers = 2  # ワーカープロセスを必ず使う
     
-    with tempfile.TemporaryDirectory(prefix="ufst_selftest_") as tmp:
+    # Windows ではワーカーやデータベースが開いているファイルを消せないため、後片付けの失敗では止めない
+    with tempfile.TemporaryDirectory(prefix="ufst_selftest_", ignore_cleanup_errors=True) as tmp:
         folder = Path(tmp)
         expected = make_samples(folder)
         
@@ -136,7 +137,7 @@ def run(report_path: Path) -> int:
             again = []
             second = Searcher().search_files(files, SearchOptions(query="りんご"), result_callback=again.append)
             assert second.cache_hits == len(files) and second.skipped_by_index == len(files) - 1, second
-            shutdown_pool()
+            shutdown_pool(wait=True)
             # Excel への書き出し
             from src.export import export_results
             exported = folder / "export.xlsx"
@@ -254,11 +255,21 @@ def run(report_path: Path) -> int:
             assert LicenseManager(storage, public_key_b64(key)).state().status == "licensed"
             return {"public_key_configured": bool(PUBLIC_KEY_B64)}
         
+        def close_index() -> None:
+            """インデックスとワーカーを閉じる（一時フォルダを消せるように）"""
+            import src.extraction.cache as cache_module
+            from src.search import shutdown_pool
+            shutdown_pool(wait=True)
+            if cache_module._cache is not None:
+                cache_module._cache.close()
+                cache_module._cache = None
+        
         step("search", search)
         step("licensing", licensing)
         step("pdf_preview", pdf_preview)
         step("office_preview", office_preview)
         step("window", window)
+        close_index()
     
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return 0 if report["ok"] else 1

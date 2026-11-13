@@ -257,13 +257,16 @@ def warm_pool() -> None:
         pass
 
 
-def shutdown_pool() -> None:
-    """プロセスプールを終了する（アプリ終了時に呼ぶ）"""
+def shutdown_pool(wait: bool = False) -> None:
+    """プロセスプールを終了する（アプリ終了時に呼ぶ）
+    
+    wait: ワーカープロセスの終了を待つ（ワーカーが開いているファイルを確実に閉じたいとき）
+    """
     global _pool
     with _pool_lock:
-        if _pool is not None:
-            _pool.shutdown(wait=False, cancel_futures=True)
-            _pool = None
+        pool, _pool = _pool, None
+    if pool is not None:
+        pool.shutdown(wait=wait, cancel_futures=True)
 
 
 def load_content(file_info: FileInfo) -> ExtractedContent:
