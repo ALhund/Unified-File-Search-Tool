@@ -43,7 +43,20 @@ PDF は変換エンジンなしで原本表示できます。
 
 ## インストールと起動
 
-### uv のインストール
+### インストーラーを使う（利用者向け・Windows）
+
+`UnifiedFileSearch-<版>-setup.exe` を実行し、画面の案内に従います。
+
+- 管理者権限は不要です（利用者ごとに `%LOCALAPPDATA%\Programs\UnifiedFileSearch` へインストール）
+- スタートメニューにアイコンが追加されます（デスクトップのアイコンは選択式）
+- Python などの準備は不要です。アンインストールは Windows の「設定 → アプリ」から行えます
+- 署名していない実行ファイルのため、初回に「Windows によって PC が保護されました」と表示されることがあります。その場合は「詳細情報」→「実行」を選びます
+
+インストールせずに使う場合は、`UnifiedFileSearch-<版>-windows.zip` を展開し、中の `UnifiedFileSearch.exe` を実行します。
+
+### ソースから起動する（開発者向け）
+
+#### uv のインストール
 
 **Windows (PowerShell):**
 ```powershell
@@ -55,7 +68,7 @@ powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-### アプリケーションの起動
+#### アプリケーションの起動
 
 **Windows:** `run.bat` をダブルクリックします。初回は自動で環境を準備し、2回目以降はすぐに起動します（コンソール画面は出ません）。
 
@@ -229,6 +242,39 @@ Unified-File-Search-Tool/
 変換は作業用コピーに対して行い、**元のファイルは変更しません**。Microsoft Office で変換する場合もマクロは無効化し、読み取り専用で開きます。
 
 ## 開発
+
+### 実行ファイル・インストーラーの作成
+
+**GitHub Actions（おすすめ）**: プルリクエストの更新、`v` で始まるタグの push、または Actions 画面の「Run workflow」で
+`.github/workflows/build-windows.yml` が動き、Windows 上で次を行います。
+
+1. テスト
+2. 実行ファイルの作成（`packaging/build.py`、PyInstaller）
+3. 実行ファイルの自己診断（`UnifiedFileSearch.exe --self-test`）
+4. インストーラーの作成（`packaging/installer.iss`、Inno Setup）
+5. インストールして、インストール後の実行ファイルでもう一度自己診断
+
+成果物（`setup.exe` と `zip`）は、実行結果の画面の「Artifacts」からダウンロードできます（保存期間 14 日）。
+
+**手元の Windows で作る場合**:
+
+```bash
+uv pip install "pyinstaller>=6.10"
+```
+```bash
+uv run python packaging/build.py
+```
+
+`dist\UnifiedFileSearch\` に実行ファイル一式と zip ができます。インストーラーは [Inno Setup 6](https://jrsoftware.org/isinfo.php) を入れて次で作ります。
+
+```bash
+ISCC.exe /DAppVersion=0.3.0 packaging\installer.iss
+```
+
+配布物は、Qt（LGPL）の DLL を差し替え可能にするためフォルダ形式で作っています。
+ライセンス上 GPL/商用の Qt モジュール（Qt Charts など）は同梱しないよう、`packaging/UnifiedFileSearch.spec` で除外しています。
+
+### テスト
 
 ```bash
 uv run pytest
