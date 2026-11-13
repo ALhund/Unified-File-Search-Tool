@@ -1,433 +1,869 @@
 """メインウィンドウ"""
 
-import time
+from collections import Counter
 from pathlib import Path
 from typing import Optional
-from concurrent.futures import ThreadPoolExecutor
 
-from PySide6.QtCore import Qt, QThread, Signal, QObject
-from PySide6.QtWidgets import (
-    QMainWindow,
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QSplitter,
-    QMessageBox,
-    QApplication,
-)
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtCore import QObject, QRunnable, Qt, QThread, QThreadPool, QTimer, Signal, Slot
+import time
+
+from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
+from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QMessageBox, QSplitter, QSystemTrayIcon, QVBoxLayout, QWidget
 
 from src.common.config import get_config
 from src.common.logger import get_logger
-from src.enumeration import FileEnumerator, EnumerationResult
-from src.extraction import get_extractor
-from src.search import Searcher, SearchOptions
-from src.metadata import MetadataReader
-from src.preview import PreviewRenderer
+from src.common.utils import format_file_size
+from src.enumeration import FileEnumerator, FileInfo
+from src.extraction import get_supported_extensions
+from src.preview import RenderedPreview, build_preview
+from src.preview.converter import OFFICE_EXTENSIONS, available_backends, prune_preview_cache
+from src.preview.loader import BACKEND_NAMES
+from src.search import (
+    CompiledQuery,
+    QueryError,
+    Searcher,
+    SearchOptions,
+    SearchSummary,
+    shutdown_pool,
+    warm_pool,
+)
+from src.index import IndexStatus, IndexWorker
+from src.licensing import LicenseManager
+from src.ui import icons
+from src.ui.platform import style_title_bar
+from src.ui.settings import UserSettings, apply_to_config
+from src.ui.theme import theme
 from src.ui.widgets import (
-    SearchPanel,
-    FileListPanel,
+    AboutDialog,
+    LicenseBar,
+    LicenseDialog,
     PreviewPanel,
+    RegexHelpDialog,
+    ResultsPanel,
+    SearchBar,
+    SettingsDialog,
+    ShortcutsDialog,
     StatusBar,
 )
+from src.ui.widgets.results_panel import Entry
 
+
+# ---------------------------------------------------------------------------
+# バックグラウンド処理
+# ---------------------------------------------------------------------------
 
 class SearchWorker(QObject):
-    """検索ワーカー（バックグラウンドスレッド用）"""
+    """検索ワーカー（専用スレッドで動く）"""
     
-    # シグナル
-    progress_updated = Signal(int, int, str)  # current, total, message
-    file_processed = Signal(dict)  # 1ファイル処理完了
-    search_completed = Signal(list, float, bool)  # results, elapsed, truncated
-    error_occurred = Signal(str)
+    status_changed = Signal(str)
+    progress_updated = Signal(int, int, int, int)  # 処理済みbytes, 総bytes, 処理済み件数, 総件数
+    result_found = Signal(object)  # SearchResult
+    finished = Signal(object)  # SearchSummary
+    failed = Signal(str)
     
-    def __init__(self):
+    def __init__(self, folder: Path, options: SearchOptions, extensions: set[str],
+                 include_subfolders: bool, max_matches: int):
         super().__init__()
+        self._folder = folder
+        self._options = options
+        self._extensions = extensions
+        self._include_subfolders = include_subfolders
+        self._max_matches = max_matches
+        self._enumerator = FileEnumerator()
+        self._searcher = Searcher()
         self._cancelled = False
-        self._config = get_config()
-        self._logger = get_logger("search")
     
-    def cancel(self):
-        """キャンセル"""
+    def cancel(self) -> None:
         self._cancelled = True
+        self._enumerator.cancel()
+        self._searcher.cancel()
     
-    def search(
-        self,
-        folder: str,
-        options: SearchOptions,
-        extensions: list[str],
-    ):
-        """検索を実行"""
-        self._cancelled = False
-        results: list[dict] = []
-        start_time = time.time()
-        truncated = False
-        
+    @Slot()
+    def run(self) -> None:
         try:
-            # 1. ファイル列挙
-            self.progress_updated.emit(0, 0, "ファイルを列挙中...")
-            
-            enumerator = FileEnumerator()
-            enum_result = enumerator.enumerate(
-                folder,
-                extensions=extensions,
+            self.status_changed.emit("ファイルを数えています…")
+            enumeration = self._enumerator.enumerate(
+                self._folder,
+                include_subfolders=self._include_subfolders,
+                target_extensions=self._extensions,
             )
-            
-            if not enum_result.files:
-                self.search_completed.emit([], 0, False)
+            if self._cancelled:
+                self.finished.emit(SearchSummary(cancelled=True))
                 return
-            
-            # 大容量ファイル警告
-            large_files = [f for f in enum_result.files if f.is_large]
-            if large_files:
-                self._logger.warning(
-                    "large_files_detected",
-                    count=len(large_files),
-                    threshold_mb=self._config.large_file_threshold_mb,
-                )
-            
-            # 2. 検索実行
-            searcher = Searcher()
-            total_files = len(enum_result.files)
-            total_matches = 0
-            
-            for i, file_info in enumerate(enum_result.files):
-                if self._cancelled:
-                    break
-                
-                self.progress_updated.emit(
-                    i + 1,
-                    total_files,
-                    f"検索中: {file_info.name}",
-                )
-                
-                try:
-                    # テキスト抽出
-                    extractor = get_extractor(file_info.extension)
-                    if not extractor:
-                        continue
-                    
-                    content = extractor.extract(file_info.path)
-                    if not content:
-                        continue
-                    
-                    # 検索
-                    search_result = searcher.search(content, options)
-                    
-                    if search_result.matches:
-                        result_dict = {
-                            "file_path": file_info.path,
-                            "file_name": file_info.name,
-                            "match_count": search_result.match_count,
-                            "matches": [
-                                {
-                                    "location": m.get_location_info(),
-                                    "text": m.text,
-                                    "start": m.start,
-                                    "end": m.end,
-                                }
-                                for m in search_result.matches
-                            ],
-                            "content": content,
-                            "truncated": search_result.truncated,
-                        }
-                        results.append(result_dict)
-                        total_matches += search_result.match_count
-                        
-                        self.file_processed.emit(result_dict)
-                        
-                        # 打ち切り判定
-                        if total_matches >= self._config.max_matches:
-                            truncated = True
-                            break
-                
-                except Exception as e:
-                    self._logger.error(
-                        "file_search_error",
-                        file=file_info.path,
-                        error=str(e),
-                    )
-            
-            elapsed = time.time() - start_time
-            self.search_completed.emit(results, elapsed, truncated)
-            
+            self.status_changed.emit(f"{len(enumeration.files):,} ファイルを検索しています…")
+            summary = self._searcher.search_files(
+                enumeration.files,
+                self._options,
+                max_matches=self._max_matches,
+                result_callback=self.result_found.emit,
+                progress_callback=self.progress_updated.emit,
+            )
+            summary.cancelled = summary.cancelled or self._cancelled
+            self.finished.emit(summary)
         except Exception as e:
-            self._logger.error("search_error", error=str(e))
-            self.error_occurred.emit(str(e))
+            get_logger("search").exception("error", f"Search failed: {e}", e)
+            self.failed.emit(str(e) or type(e).__name__)
 
+
+class _TaskSignals(QObject):
+    done = Signal(int, object)
+
+
+class ListingTask(QRunnable):
+    """フォルダ内のファイル一覧を作る（検索前の表示用）"""
+    
+    def __init__(self, token: int, folder: Path, include_subfolders: bool):
+        super().__init__()
+        self.setAutoDelete(False)
+        self.signals = _TaskSignals()
+        self._token = token
+        self._folder = folder
+        self._include_subfolders = include_subfolders
+    
+    def run(self) -> None:
+        try:
+            result = FileEnumerator().enumerate(
+                self._folder,
+                include_subfolders=self._include_subfolders,
+                target_extensions=get_supported_extensions(),
+            )
+            files = result.files
+        except Exception:
+            files = []
+        self.signals.done.emit(self._token, files)
+
+
+class PreviewTask(QRunnable):
+    """プレビュー生成（変換・描画準備に時間がかかるため別スレッドで行う）"""
+    
+    def __init__(self, token: int, file_info: FileInfo, options: Optional[SearchOptions], mode: str):
+        super().__init__()
+        self.setAutoDelete(False)  # Python側で寿命を管理する
+        self.signals = _TaskSignals()
+        self._token = token
+        self._file_info = file_info
+        self._options = options
+        self._mode = mode
+    
+    def run(self) -> None:
+        try:
+            preview = build_preview(self._file_info, self._options, self._mode)
+        except Exception as e:
+            get_logger("preview").exception("error", f"Preview failed: {self._file_info.path}", e)
+            preview = RenderedPreview(note=f"プレビューを作成できませんでした: {e}")
+        self.signals.done.emit(self._token, preview)
+
+
+# ---------------------------------------------------------------------------
+# ウィンドウ
+# ---------------------------------------------------------------------------
 
 class MainWindow(QMainWindow):
     """メインウィンドウ"""
     
-    def __init__(self):
+    def __init__(self, settings: Optional[UserSettings] = None, license_manager: Optional[LicenseManager] = None):
         super().__init__()
         self._config = get_config()
         self._logger = get_logger("ui")
+        self._settings = settings or UserSettings()
+        self._license = license_manager or LicenseManager()
+        
         self._search_thread: Optional[QThread] = None
         self._search_worker: Optional[SearchWorker] = None
-        self._preview_renderer = PreviewRenderer()
-        self._metadata_reader = MetadataReader()
+        self._search_options: Optional[SearchOptions] = None
+        self._search_root: Optional[Path] = None
         
+        self._pool = QThreadPool(self)
+        self._pool.setMaxThreadCount(2)
+        self._tasks: dict[int, QRunnable] = {}
+        self._preview_token = 0
+        self._listing_token = 0
+        self._listing_files: list[FileInfo] = []
+        self._listing_root: Optional[Path] = None
+        self._current_entry: Optional[Entry] = None
+        
+        self.setAcceptDrops(True)
         self._setup_ui()
         self._setup_shortcuts()
+        self._restore_settings()
+        # 時間のかかる確認はウィンドウを表示してから行う（起動を速くするため）
+        QTimer.singleShot(0, self._update_license)
+        QTimer.singleShot(50, self._update_engine_label)
+        QTimer.singleShot(300, warm_pool)
+        QTimer.singleShot(2000, prune_preview_cache)
         
-        self._logger.info("app_started")
+        self._quitting = False
+        self._setup_index()
+        self._setup_tray()
+        
+        theme().changed.connect(self._on_theme_changed)
+        self._on_theme_changed(theme().palette)
+        try:
+            QGuiApplication.styleHints().colorSchemeChanged.connect(self._on_system_scheme_changed)
+        except AttributeError:
+            pass
+        
+        self._logger.info("app_started", "Main window created")
     
-    def _setup_ui(self):
-        """UIを構築"""
-        self.setWindowTitle("Unified File Search Tool")
-        self.setMinimumSize(1200, 800)
-        
-        # セントラルウィジェット
-        central = QWidget()
-        self.setCentralWidget(central)
-        
-        main_layout = QVBoxLayout(central)
-        main_layout.setContentsMargins(8, 8, 8, 8)
-        main_layout.setSpacing(8)
-        
-        # メインスプリッター（左右分割）
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        
-        # 左ペイン
-        left_widget = QWidget()
-        left_layout = QVBoxLayout(left_widget)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(8)
-        
-        # 検索パネル
-        self._search_panel = SearchPanel()
-        self._search_panel.search_requested.connect(self._on_search_requested)
-        self._search_panel.cancel_requested.connect(self._on_cancel_requested)
-        left_layout.addWidget(self._search_panel)
-        
-        # ファイル一覧パネル
-        self._file_list_panel = FileListPanel()
-        self._file_list_panel.file_selected.connect(self._on_file_selected)
-        left_layout.addWidget(self._file_list_panel)
-        
-        splitter.addWidget(left_widget)
-        
-        # 右ペイン（プレビュー）
-        self._preview_panel = PreviewPanel()
-        splitter.addWidget(self._preview_panel)
-        
-        # スプリッター比率
-        splitter.setSizes([400, 800])
-        
-        main_layout.addWidget(splitter)
-        
-        # ステータスバー
-        self._status_bar = StatusBar()
-        main_layout.addWidget(self._status_bar)
+    # ------------------------------------------------------------------
+    # 構築
+    # ------------------------------------------------------------------
     
-    def _setup_shortcuts(self):
-        """ショートカットを設定"""
-        # ESCで中断
-        esc_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
-        esc_shortcut.activated.connect(self._on_cancel_requested)
+    def _setup_ui(self) -> None:
+        self.setWindowTitle("Unified File Search")
+        self.setWindowIcon(icons.app_icon())
+        self.setMinimumSize(1080, 680)
+        self.resize(1480, 920)
+        
+        root = QWidget()
+        root.setObjectName("AppRoot")
+        self.setCentralWidget(root)
+        layout = QVBoxLayout(root)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        self._search_bar = SearchBar()
+        bar = self._search_bar
+        bar.search_requested.connect(self._on_search_requested)
+        bar.cancel_requested.connect(self._on_cancel_requested)
+        bar.folder_changed.connect(self._on_folder_changed)
+        bar.types_changed.connect(self._on_types_changed)
+        bar.settings_requested.connect(self._open_settings)
+        bar.theme_requested.connect(self._set_theme_mode)
+        bar.shortcuts_requested.connect(lambda: ShortcutsDialog(self).exec())
+        bar.regex_help_requested.connect(lambda: RegexHelpDialog(self).exec())
+        bar.about_requested.connect(lambda: AboutDialog(self, self._license.state()).exec())
+        bar.license_requested.connect(lambda: self._open_license_dialog())
+        bar.match_limit_changed.connect(self._on_match_limit_changed)
+        layout.addWidget(bar)
+        
+        self._license_bar = LicenseBar()
+        self._license_bar.register_requested.connect(lambda: self._open_license_dialog())
+        layout.addWidget(self._license_bar)
+        
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(12, 12, 12, 12)
+        self._splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._splitter.setChildrenCollapsible(False)
+        self._splitter.setHandleWidth(10)
+        
+        self._results = ResultsPanel()
+        self._results.setMinimumWidth(340)
+        self._results.file_selected.connect(self._on_entry_selected)
+        self._results.back_to_listing.connect(self._show_listing)
+        self._results.browse_requested.connect(bar.browse_folder)
+        self._results.export_requested.connect(self._export_results)
+        self._splitter.addWidget(self._results)
+        
+        self._preview = PreviewPanel()
+        self._preview.setMinimumWidth(480)
+        self._preview.mode_change_requested.connect(self._request_preview)
+        self._splitter.addWidget(self._preview)
+        self._splitter.setStretchFactor(0, 0)
+        self._splitter.setStretchFactor(1, 1)
+        self._splitter.setSizes([460, 1000])
+        content_layout.addWidget(self._splitter)
+        layout.addWidget(content, 1)
+        
+        self._status = StatusBar()
+        layout.addWidget(self._status)
     
-    def _on_search_requested(self, conditions: dict):
-        """検索リクエスト"""
-        # 入力検証
-        folder = conditions.get("folder", "")
+    def _setup_shortcuts(self) -> None:
+        bindings = [
+            (Qt.Key.Key_Escape, self._on_cancel_requested),
+            ("Ctrl+F", self._search_bar.focus_query),
+            ("Ctrl+L", self._search_bar.focus_query),
+            ("Ctrl+O", self._search_bar.browse_folder),
+            ("Ctrl+,", self._open_settings),
+            (Qt.Key.Key_F1, lambda: ShortcutsDialog(self).exec()),
+            ("Ctrl+E", self._preview.reveal_current),
+            ("Ctrl+Shift+C", self._preview.copy_path),
+            ("Ctrl+Return", self._preview.open_current),
+            ("Ctrl+S", self._export_results),
+        ]
+        for key, handler in bindings:
+            shortcut = QShortcut(QKeySequence(key), self)
+            shortcut.activated.connect(handler)
+    
+    # ------------------------------------------------------------------
+    # 設定の保存・復元
+    # ------------------------------------------------------------------
+    
+    def _restore_settings(self) -> None:
+        s = self._settings
+        if geometry := s.load_bytes("geometry"):
+            self.restoreGeometry(geometry)
+        if splitter := s.load_bytes("splitter"):
+            self._splitter.restoreState(splitter)
+        sort_key = s.load_bytes("sort_key")
+        if sort_key:
+            self._results.set_sort_key(str(sort_key))
+        
+        self._search_bar.restore_state(s.search_state)
+        self._search_bar.set_match_limit(self._config.search_max_matches_per_file)
+        self._search_bar.set_recent_folders(s.recent_folders)
+        self._search_bar.set_query_history(s.query_history)
+        self._results.set_extension_filter(self._search_bar.selected_extensions())
+        if s.last_folder and Path(s.last_folder).is_dir():
+            self._search_bar.set_folder(s.last_folder)
+        else:
+            self._status.set_message("フォルダを選び、検索語を入力して Enter で検索します")
+    
+    def _save_settings(self) -> None:
+        s = self._settings
+        s.save_bytes("geometry", self.saveGeometry())
+        s.save_bytes("splitter", self._splitter.saveState())
+        s.save_bytes("sort_key", self._results.sort_key())
+        s.search_state = self._search_bar.state()
+        s.sync()
+    
+    # ------------------------------------------------------------------
+    # テーマ
+    # ------------------------------------------------------------------
+    
+    def _set_theme_mode(self, mode: str) -> None:
+        self._settings.theme = mode
+        theme().mode = mode
+        theme().apply()
+    
+    def _on_system_scheme_changed(self, *_args) -> None:
+        if theme().mode == "system":
+            theme().apply()
+    
+    def _on_theme_changed(self, p) -> None:
+        icons.refresh_bound()
+        self._search_bar.set_theme_mode(theme().mode, p.dark)
+        style_title_bar(self, p.dark, p.surface, p.text)
+    
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        p = theme().palette
+        style_title_bar(self, p.dark, p.surface, p.text)
+    
+    def _update_engine_label(self) -> None:
+        backends = available_backends()
+        if backends:
+            self._status.set_engine(f"原本表示: {BACKEND_NAMES.get(backends[0], backends[0])}")
+            self._status._engine.setToolTip("Office ファイルを開いたときと同じ見た目で表示するための変換エンジン")
+        else:
+            self._status.set_engine("原本表示: Office ファイルは不可（PDF のみ）")
+            self._status._engine.setToolTip(
+                "Microsoft Office か LibreOffice をインストールすると、"
+                "Excel・Word・PowerPoint も開いたときと同じ見た目で表示できます"
+            )
+    
+    def _on_match_limit_changed(self, value: int) -> None:
+        """詳細条件で上限が変えられた（次回以降も使う）"""
+        self._settings.match_limit = value
+        self._config.search_max_matches_per_file = value
+    
+    # ------------------------------------------------------------------
+    # ライセンス
+    # ------------------------------------------------------------------
+    
+    def _update_license(self) -> None:
+        state = self._license.state()
+        self._license_bar.set_state(state)
+        suffix = {"trial": "（体験版）", "expired": "（体験期間終了）", "unconfigured": "（開発版）"}.get(state.status, "")
+        self.setWindowTitle(f"Unified File Search{suffix}")
+    
+    def _open_license_dialog(self, reason: str = "") -> None:
+        dialog = LicenseDialog(self._license, self, reason)
+        dialog.exec()
+        if dialog.changed:
+            self._update_license()
+    
+    # ------------------------------------------------------------------
+    # 設定画面
+    # ------------------------------------------------------------------
+    
+    def _open_settings(self) -> None:
+        dialog = SettingsDialog(self._settings, self)
+        if dialog.exec():
+            apply_to_config(self._settings)
+            self._search_bar.set_match_limit(self._config.search_max_matches_per_file)
+            theme().mode = self._settings.theme
+            theme().use_system_accent = self._settings.use_system_accent
+            theme().apply()
+            self._update_engine_label()
+            self._apply_index_settings()
+            if dialog.index_update_requested:
+                QTimer.singleShot(200, self.update_index)
+        if dialog.cache_cleared:
+            self._status.set_message("キャッシュを消去しました", "check")
+    
+    # ------------------------------------------------------------------
+    # フォルダとファイル一覧（検索前）
+    # ------------------------------------------------------------------
+    
+    def _on_folder_changed(self, folder: str) -> None:
+        if self._search_worker is not None:
+            return
+        path = Path(folder) if folder else None
+        valid = path is not None and path.is_dir()
+        self._search_bar.set_folder_valid(valid or not folder)
+        if not valid:
+            self._listing_files = []
+            self._listing_root = None
+            self._search_bar.set_type_counts(None)
+            if folder:
+                self._results.show_placeholder("warning", "フォルダが見つかりません", folder)
+            else:
+                self._results.show_placeholder(
+                    "folder-open",
+                    "検索するフォルダを選んでください",
+                    "上の「参照…」で選ぶか、フォルダをこのウィンドウにドラッグ＆ドロップします。",
+                    "フォルダを選ぶ…",
+                )
+            return
+        
+        self._listing_token += 1
+        token = self._listing_token
+        self._results.show_placeholder("folder-open", "ファイルを数えています…")
+        task = ListingTask(token, path, self._search_bar.include_subfolders())
+        task.signals.done.connect(lambda t, files, p=path: self._on_listing_ready(t, files, p))
+        self._tasks[-token] = task
+        self._pool.start(task)
+    
+    def _on_listing_ready(self, token: int, files: list[FileInfo], root: Path) -> None:
+        self._tasks.pop(-token, None)
+        if token != self._listing_token:
+            return
+        self._listing_files = files
+        self._listing_root = root
+        counts = Counter(f.extension for f in files)
+        self._search_bar.set_type_counts(dict(counts))
+        if not self._results.is_showing_results():
+            self._show_listing()
+        total = sum(f.size for f in files)
+        self._status.set_message(f"{root} — {len(files):,} ファイル（{format_file_size(total)}）", "folder")
+    
+    def _show_listing(self) -> None:
+        if self._listing_root is None:
+            return
+        self._search_options = None
+        self._preview.set_has_query(False)
+        self._results.set_listing(self._listing_files, self._listing_root)
+        self._results.set_extension_filter(self._search_bar.selected_extensions())
+    
+    def _on_types_changed(self) -> None:
+        self._results.set_extension_filter(self._search_bar.selected_extensions())
+    
+    # ------------------------------------------------------------------
+    # ドラッグ＆ドロップ
+    # ------------------------------------------------------------------
+    
+    def dragEnterEvent(self, event) -> None:  # noqa: N802
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+    
+    def dropEvent(self, event) -> None:  # noqa: N802
+        for url in event.mimeData().urls():
+            path = Path(url.toLocalFile())
+            if path.is_dir():
+                self._search_bar.set_folder(str(path))
+                self._search_bar.focus_query()
+                event.acceptProposedAction()
+                return
+            if path.is_file():
+                self._search_bar.set_folder(str(path.parent))
+                self._search_bar.focus_query()
+                event.acceptProposedAction()
+                return
+    
+    # ------------------------------------------------------------------
+    # 検索
+    # ------------------------------------------------------------------
+    
+    def _on_search_requested(self) -> None:
+        if not self._license.state().can_search:
+            self._open_license_dialog(
+                "体験期間が終了しました。引き続き検索するには、ライセンスを登録してください。"
+                "（フォルダ内のファイル一覧の表示とプレビューは、このままお使いいただけます）"
+            )
+            if not self._license.state().can_search:
+                return
+        c = self._search_bar.conditions()
+        folder = c["folder"]
         if not folder:
-            QMessageBox.warning(self, "警告", "検索対象フォルダを選択してください。")
+            self._search_bar.browse_folder()
+            return
+        if not Path(folder).is_dir():
+            QMessageBox.warning(self, "フォルダが見つかりません", f"次のフォルダが見つかりません:\n{folder}")
             return
         
-        if not Path(folder).exists():
-            QMessageBox.warning(self, "警告", "指定されたフォルダが存在しません。")
-            return
-        
-        keyword = conditions.get("keyword", "")
-        if not keyword:
-            QMessageBox.warning(self, "警告", "検索語を入力してください。")
-            return
-        
-        # 検索オプション構築
         options = SearchOptions(
-            keyword=keyword,
-            is_regex=conditions.get("is_regex", False),
-            ignore_case=conditions.get("ignore_case", True),
-            multiline=conditions.get("multiline", False),
-            dotall=conditions.get("dotall", False),
-            exclude_keywords=conditions.get("exclude_keywords", []),
+            query=c["keyword"],
+            use_regex=c["use_regex"],
+            case_sensitive=c["case_sensitive"],
+            ignore_width=c["ignore_width"],
+            match_whole=c["match_whole"],
+            term_mode=c["term_mode"],
+            exclude_words=c["exclude_words"],
+            regex_multiline=c["multiline"],
+            regex_dot_matches_newline=c["dotall"],
         )
+        try:
+            CompiledQuery(options)
+        except QueryError as e:
+            self._status.set_message(str(e), "warning")
+            self._search_bar.focus_query()
+            return
         
-        extensions = conditions.get("extensions", self._config.target_extensions)
+        extensions = set(c["extensions"]) & get_supported_extensions()
+        if not extensions:
+            self._status.set_message("検索するファイルの種類を1つ以上選んでください", "warning")
+            return
         
-        # 検索開始
-        self._start_search(folder, options, extensions)
+        self._settings.add_query(options.query)
+        self._settings.add_recent_folder(folder)
+        self._search_bar.set_query_history(self._settings.query_history)
+        self._search_bar.set_recent_folders(self._settings.recent_folders)
+        self._start_search(Path(folder), options, extensions, c["include_subfolders"], c["match_limit"])
     
-    def _start_search(
-        self,
-        folder: str,
-        options: SearchOptions,
-        extensions: list[str],
-    ):
-        """検索を開始"""
-        # 前回の検索を停止
+    def _start_search(self, folder: Path, options: SearchOptions, extensions: set[str],
+                      include_subfolders: bool, max_matches: int) -> None:
         self._stop_search()
+        # 検索を優先し、索引の更新は検索のあとに回す
+        if self._index_running:
+            self._index_worker.cancel()
+            self._index_pending = True
+        self._search_options = options
+        self._search_root = folder
+        self._current_entry = None
+        self._preview_token += 1
+        self._preview.set_has_query(True)
         
-        # UI更新
-        self._search_panel.set_searching(True)
-        self._file_list_panel.clear()
-        self._preview_panel.clear()
-        self._status_bar.show_progress(True)
-        self._status_bar.set_message("検索中...")
+        self._search_bar.set_searching(True)
+        self._results.begin_search(folder)
+        self._preview.clear()
+        self._status.clear_time()
+        self._status.show_progress(True)
+        self._status.set_indeterminate()
+        self._status.set_message("検索しています…", "search")
         
-        # ワーカー作成
-        self._search_thread = QThread()
-        self._search_worker = SearchWorker()
-        self._search_worker.moveToThread(self._search_thread)
+        thread = QThread(self)
+        worker = SearchWorker(folder, options, extensions, include_subfolders, max_matches)
+        worker.moveToThread(thread)
+        worker.status_changed.connect(lambda text: self._status.set_message(text, "search"))
+        worker.progress_updated.connect(self._on_progress_updated)
+        worker.result_found.connect(self._results.add_result)
+        worker.finished.connect(self._on_search_finished)
+        worker.failed.connect(self._on_search_failed)
+        thread.started.connect(worker.run)
+        self._search_thread = thread
+        self._search_worker = worker
+        thread.start()
         
-        # シグナル接続
-        self._search_worker.progress_updated.connect(self._on_progress_updated)
-        self._search_worker.file_processed.connect(self._on_file_processed)
-        self._search_worker.search_completed.connect(self._on_search_completed)
-        self._search_worker.error_occurred.connect(self._on_search_error)
-        
-        # 検索開始
-        self._search_thread.started.connect(
-            lambda: self._search_worker.search(folder, options, extensions)
-        )
-        self._search_thread.start()
-        
-        self._logger.info(
-            "search_started",
-            folder=folder,
-            keyword=options.keyword,
-            is_regex=options.is_regex,
-        )
+        self._logger.info("search_started", "Search requested", folder=str(folder),
+                          query=options.query, use_regex=options.use_regex)
     
-    def _stop_search(self):
-        """検索を停止"""
-        if self._search_worker:
-            self._search_worker.cancel()
-        
-        if self._search_thread and self._search_thread.isRunning():
-            self._search_thread.quit()
-            self._search_thread.wait(1000)
-        
-        self._search_thread = None
+    def _stop_search(self) -> None:
+        worker, thread = self._search_worker, self._search_thread
         self._search_worker = None
+        self._search_thread = None
+        if worker is not None:
+            worker.cancel()
+            for signal in (worker.status_changed, worker.progress_updated, worker.result_found,
+                           worker.finished, worker.failed):
+                try:
+                    signal.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+        if thread is not None:
+            thread.quit()
+            if not thread.wait(5000):
+                self._logger.warning("search_stop", "Search thread did not stop in time")
+            if worker is not None:
+                worker.deleteLater()
+            thread.deleteLater()
     
-    def _on_cancel_requested(self):
-        """キャンセルリクエスト"""
+    def _on_cancel_requested(self) -> None:
+        if self._search_worker is None:
+            return
+        self._search_worker.cancel()
+        self._status.set_message("中断しています…", "stop")
+    
+    def _on_progress_updated(self, done_bytes: int, total_bytes: int, done_files: int, total_files: int) -> None:
+        percent = int(done_bytes * 100 / total_bytes) if total_bytes else 100
+        self._status.set_progress(percent, 100, f"{done_files:,} / {total_files:,} ファイル  {percent}%")
+    
+    def _on_search_finished(self, summary: SearchSummary) -> None:
         self._stop_search()
-        self._search_panel.set_searching(False)
-        self._status_bar.show_progress(False)
-        self._status_bar.set_message("検索がキャンセルされました")
+        if self._search_root is not None and not summary.cancelled:
+            before = list(self._settings.index_folders)
+            self._remember_index_folder(str(self._search_root))
+            if self._settings.index_folders != before:
+                self._index_pending = True
+        if self._index_pending:
+            QTimer.singleShot(1500, self.update_index)
+        self._search_bar.set_searching(False)
+        self._status.show_progress(False)
+        self._status.set_time(summary.elapsed)
+        self._results.finish_search(summary.cancelled)
         
-        self._logger.info("search_cancelled")
-    
-    def _on_progress_updated(self, current: int, total: int, message: str):
-        """進捗更新"""
-        if total > 0:
-            self._status_bar.set_progress(current, total, f"{current}/{total} ファイル")
+        if summary.cancelled:
+            self._status.set_message("検索を中断しました", "stop")
+        elif summary.total_files == 0:
+            self._status.set_message("対象のファイルがありません（ファイルの種類とサブフォルダの設定を確認）", "warning")
         else:
-            self._status_bar.set_indeterminate(True)
-        
-        self._status_bar.set_message(message)
+            message = (f"{summary.total_files:,} ファイルを検索し、{summary.matched_files:,} ファイルで "
+                       f"{summary.total_matches:,} 件見つかりました")
+            if summary.error_files:
+                message += f"（読み込めないファイル {summary.error_files} 件）"
+            self._status.set_message(message, "check")
+        self._logger.info("search_completed", "Search completed", files=summary.total_files,
+                          matched_files=summary.matched_files, matches=summary.total_matches,
+                          cache_hits=summary.cache_hits, elapsed_ms=int(summary.elapsed * 1000))
     
-    def _on_file_processed(self, result: dict):
-        """ファイル処理完了"""
-        # 逐次表示（リアルタイム更新）
-        pass
-    
-    def _on_search_completed(
-        self,
-        results: list[dict],
-        elapsed: float,
-        truncated: bool,
-    ):
-        """検索完了"""
-        # 検索終了
+    def _on_search_failed(self, error: str) -> None:
         self._stop_search()
-        
-        # UI更新
-        self._search_panel.set_searching(False)
-        self._status_bar.show_progress(False)
-        self._status_bar.set_time(elapsed)
-        
-        # 結果表示
-        self._file_list_panel.set_results(results)
-        
-        if truncated:
-            self._file_list_panel.set_status(
-                f"※ 結果が{self._config.max_matches}件で打ち切られました",
-                is_warning=True,
-            )
-            self._status_bar.set_message("検索完了（打ち切り）")
-        else:
-            total_matches = sum(r["match_count"] for r in results)
-            self._status_bar.set_message(
-                f"検索完了: {len(results)}ファイル, {total_matches}件のマッチ"
-            )
-        
-        self._logger.info(
-            "search_completed",
-            files=len(results),
-            matches=sum(r["match_count"] for r in results),
-            elapsed=elapsed,
-            truncated=truncated,
-        )
-    
-    def _on_search_error(self, error: str):
-        """検索エラー"""
-        self._stop_search()
-        self._search_panel.set_searching(False)
-        self._status_bar.show_progress(False)
-        self._status_bar.set_message(f"エラー: {error}")
-        
+        self._search_bar.set_searching(False)
+        self._status.show_progress(False)
+        self._results.finish_search(cancelled=True)
+        self._status.set_message(f"エラー: {error}", "warning")
         QMessageBox.critical(self, "エラー", f"検索中にエラーが発生しました:\n{error}")
-        
-        self._logger.error("search_error", error=error)
     
-    def _on_file_selected(self, file_path: str, match_index: int):
-        """ファイル選択"""
-        # 結果からコンテンツを取得
-        result = None
-        for r in self._file_list_panel._results:
-            if r["file_path"] == file_path:
-                result = r
-                break
+    # ------------------------------------------------------------------
+    # Excel への書き出し
+    # ------------------------------------------------------------------
+    
+    def _export_results(self) -> None:
+        results = self._results.results() if self._results.is_showing_results() else []
+        if not results or self._search_worker is not None:
+            self._status.set_message("書き出す検索結果がありません（検索が終わってから書き出せます）", "info")
+            return
+        from PySide6.QtWidgets import QFileDialog
+        from src.export import export_results
+        from src.ui.platform import open_file
         
-        if not result:
+        options = self._search_options
+        keyword = "".join(c for c in (options.query if options else "") if c not in '\\/:*?"<>|')[:30].strip()
+        name = f"検索結果_{keyword or '結果'}_{time.strftime('%Y%m%d_%H%M')}.xlsx"
+        start = str(Path(self._settings.export_folder or Path.home()) / name)
+        path, _ = QFileDialog.getSaveFileName(self, "Excel に書き出す", start, "Excel ブック (*.xlsx)")
+        if not path:
+            return
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            files, hits = export_results(Path(path), results, options, self._search_root)
+        except PermissionError:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, "書き出し", "保存できませんでした。同じ名前のファイルを Excel で開いていないか確認してください。")
+            return
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, "書き出し", f"保存できませんでした: {e}")
+            return
+        QApplication.restoreOverrideCursor()
+        self._settings.export_folder = str(Path(path).parent)
+        self._status.set_message(f"{files:,} ファイル・{hits:,} 件を書き出しました: {path}", "check")
+        box = QMessageBox(self)
+        box.setWindowTitle("書き出し")
+        box.setText(f"{files:,} ファイル・{hits:,} 件のヒットを書き出しました。")
+        open_button = box.addButton("開く", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("閉じる", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is open_button:
+            open_file(Path(path))
+    
+    # ------------------------------------------------------------------
+    # プレビュー
+    # ------------------------------------------------------------------
+    
+    def _on_entry_selected(self, entry: Entry) -> None:
+        if entry is self._current_entry:
+            return
+        self._current_entry = entry
+        self._request_preview("auto")
+    
+    def _request_preview(self, mode: str) -> None:
+        entry = self._current_entry
+        if entry is None:
+            return
+        self._preview_token += 1
+        token = self._preview_token
+        options = self._search_options if entry.result is not None else None
+        converting = mode != "text" and entry.file_info.extension in OFFICE_EXTENSIONS
+        self._preview.show_loading(entry.file_info, converting)
+        
+        task = PreviewTask(token, entry.file_info, options, mode)
+        task.signals.done.connect(self._on_preview_ready)
+        self._tasks[token] = task
+        self._pool.start(task)
+    
+    def _on_preview_ready(self, token: int, preview: RenderedPreview) -> None:
+        self._tasks.pop(token, None)
+        if token != self._preview_token or self._current_entry is None:
+            if preview.page_document is not None:
+                preview.page_document.close()
+            return
+        result = self._current_entry.result
+        self._preview.set_has_query(result is not None)
+        expected = result.match_count if result is not None and not result.truncated else None
+        self._preview.set_preview(self._current_entry.file_info, preview, expected_hits=expected)
+    
+    # ------------------------------------------------------------------
+    # 終了
+    # ------------------------------------------------------------------
+    
+    # ------------------------------------------------------------------
+    # 常時インデックス
+    # ------------------------------------------------------------------
+    
+    start_index = Signal(list, bool)
+    
+    def _setup_index(self) -> None:
+        self._index_thread = QThread(self)
+        self._index_worker = IndexWorker()
+        self._index_worker.moveToThread(self._index_thread)
+        self.start_index.connect(self._index_worker.run)
+        self._index_worker.progress.connect(self._on_index_progress)
+        self._index_worker.finished.connect(self._on_index_finished)
+        self._index_thread.start()
+        self._index_running = False
+        self._index_pending = False
+        self._index_status = IndexStatus()
+        
+        self._index_timer = QTimer(self)
+        self._index_timer.timeout.connect(self.update_index)
+        self._apply_index_settings()
+        QTimer.singleShot(4000, self.update_index)
+    
+    def _apply_index_settings(self) -> None:
+        self._index_timer.start(max(1, self._settings.index_interval_min) * 60 * 1000)
+        self._show_index_status()
+    
+    def update_index(self) -> None:
+        """登録フォルダの索引を更新する（検索中は検索のあとに回す）"""
+        if not self._settings.index_enabled or not self._settings.index_folders:
+            self._show_index_status()
+            return
+        if self._search_worker is not None or self._index_running:
+            self._index_pending = True
+            return
+        self._index_running = True
+        self._index_pending = False
+        self.start_index.emit(self._settings.index_folders, True)
+    
+    def _on_index_progress(self, status: IndexStatus) -> None:
+        self._index_status = status
+        self._show_index_status()
+    
+    def _on_index_finished(self, status: IndexStatus) -> None:
+        self._index_running = False
+        self._index_status = status
+        self._show_index_status()
+        if self._index_pending:
+            QTimer.singleShot(1000, self.update_index)
+    
+    def _show_index_status(self) -> None:
+        status = self._index_status
+        if not self._settings.index_enabled:
+            text = "インデックス: オフ"
+        elif not self._settings.index_folders:
+            text = "インデックス: 対象フォルダなし"
+        elif status.running and status.total:
+            text = f"インデックス更新中 {status.done:,} / {status.total:,}"
+        elif status.running:
+            text = "インデックスを確認中…"
+        elif status.last_finished:
+            text = f"インデックス: {status.indexed_files:,} ファイル（{time.strftime('%H:%M', time.localtime(status.last_finished))} 更新）"
+        else:
+            text = "インデックス: 準備中"
+        self._status.set_index(text)
+        if hasattr(self, "_tray") and self._tray is not None:
+            self._tray.setToolTip(f"Unified File Search\n{text}")
+    
+    def _remember_index_folder(self, folder: str) -> None:
+        """検索したフォルダを常時インデックスに加える（設定で無効にできる）"""
+        if not self._settings.index_auto_add:
+            return
+        folders = self._settings.index_folders
+        normalized = str(Path(folder))
+        # すでに登録フォルダの中にあるなら追加しない
+        for existing in folders:
+            try:
+                Path(normalized).relative_to(existing)
+                return
+            except ValueError:
+                pass
+        self._settings.index_folders = (folders + [normalized])[-10:]
+    
+    # ------------------------------------------------------------------
+    # タスクトレイ
+    # ------------------------------------------------------------------
+    
+    def _setup_tray(self) -> None:
+        self._tray: Optional[QSystemTrayIcon] = None
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        tray = QSystemTrayIcon(icons.app_icon(), self)
+        menu = QMenu(self)
+        menu.addAction(icons.icon("search"), "開く", self.show_from_tray)
+        menu.addAction(icons.icon("database"), "インデックスを今すぐ更新", self.update_index)
+        menu.addSeparator()
+        menu.addAction("終了", self.quit_app)
+        tray.setContextMenu(menu)
+        tray.activated.connect(
+            lambda reason: self.show_from_tray()
+            if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick)
+            else None
+        )
+        tray.show()
+        self._tray = tray
+        self._show_index_status()
+    
+    def tray_icon(self) -> Optional[QSystemTrayIcon]:
+        return self._tray
+    
+    def show_from_tray(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+    
+    def quit_app(self) -> None:
+        self._quitting = True
+        self.close()
+    
+    def closeEvent(self, event) -> None:  # noqa: N802
+        if (
+            not self._quitting
+            and self._tray is not None
+            and self._settings.tray_on_close
+            and self._settings.index_enabled
+        ):
+            # 閉じてもタスクトレイに残り、索引の更新を続ける
+            self._save_settings()
+            self.hide()
+            event.ignore()
+            if not self._settings.tray_notice_shown:
+                self._tray.showMessage(
+                    "Unified File Search",
+                    "タスクトレイで動作を続け、インデックスを最新に保ちます。終了するにはアイコンを右クリックして「終了」を選びます。",
+                    icons.app_icon(),
+                    6000,
+                )
+                self._settings.tray_notice_shown = True
             return
         
-        content = result.get("content")
-        if not content:
-            return
-        
-        # プレビュー生成
-        matches = result.get("matches", [])
-        html = self._preview_renderer.render_full(content, [])  # マッチハイライト付き
-        
-        # メタデータ取得
-        metadata = self._metadata_reader.read(file_path)
-        file_info = ""
-        if metadata:
-            parts = []
-            if metadata.author:
-                parts.append(f"作成者: {metadata.author}")
-            if metadata.last_modified_by:
-                parts.append(f"最終更新者: {metadata.last_modified_by}")
-            if metadata.created:
-                parts.append(f"作成日: {metadata.created}")
-            if content.encoding:
-                parts.append(f"文字コード: {content.encoding}")
-            file_info = " | ".join(parts)
-        
-        # プレビュー表示
-        self._preview_panel.set_content(html, matches, file_info)
-        
-        # マッチ箇所にジャンプ
-        if match_index < len(matches):
-            self._preview_panel.select_match(match_index)
-    
-    def closeEvent(self, event):
-        """ウィンドウ閉じイベント"""
+        self._index_worker.cancel()
+        self._index_timer.stop()
+        self._index_thread.quit()
+        self._index_thread.wait(5000)
+        if self._tray is not None:
+            self._tray.hide()
+        self._save_settings()
         self._stop_search()
-        self._logger.info("app_closed")
+        self._preview_token += 1
+        self._listing_token += 1
+        self._pool.clear()
+        self._pool.waitForDone(3000)
+        self._preview.shutdown()
+        shutdown_pool()
+        self._logger.info("app_closed", "Application closed")
         event.accept()
+        QApplication.instance().quit()

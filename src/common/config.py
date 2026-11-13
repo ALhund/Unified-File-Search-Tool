@@ -33,17 +33,29 @@ class Config:
     """アプリケーション設定"""
     
     large_file_warning_threshold_mb: int = 20
-    search_max_matches_per_file: int = 50
+    search_max_matches_per_file: int = 1000  # 0 = 無制限
     logs_max_lines_per_file: int = 1000
     logging_level: str = "Information"
     target_extensions: list[str] = field(default_factory=lambda: [
-        "pptx", "xlsx", "docx", "pdf", "md", "txt", "log"
+        "pptx", "ppt", "xlsx", "xlsm", "xls", "docx", "doc", "pdf", "md", "txt", "log"
     ])
     search_defaults: SearchDefaults = field(default_factory=SearchDefaults)
     regex_options: RegexOptions = field(default_factory=RegexOptions)
     
+    # 検索の並列数（0 = CPU数から自動）
+    search_workers: int = 0
+    # 抽出結果キャッシュ（2回目以降の検索を高速化）
+    extraction_cache_enabled: bool = True
+    cache_max_size_mb: int = 500
+    # Office→PDF変換: auto / msoffice / libreoffice / none
+    office_converter: str = "auto"
+    libreoffice_path: str = ""
+    preview_conversion_timeout_sec: int = 120
+    preview_max_hits: int = 1000
+    
     _config_path: Optional[Path] = field(default=None, repr=False)
     _logs_path: Optional[Path] = field(default=None, repr=False)
+    _cache_path: Optional[Path] = field(default=None, repr=False)
     
     @classmethod
     def get_app_name(cls) -> str:
@@ -52,11 +64,9 @@ class Config:
     @classmethod
     def get_portable_base(cls) -> Path:
         """実行ファイルと同じフォルダを取得"""
-        # 開発時は現在のディレクトリ、exe化時は実行ファイルの場所
-        import sys
-        if getattr(sys, 'frozen', False):
-            return Path(sys.executable).parent
-        return Path.cwd()
+        # 開発時はリポジトリのフォルダ、exe化時は実行ファイルの場所
+        from src.common.paths import app_dir
+        return app_dir()
     
     @classmethod
     def get_user_base(cls) -> Path:
@@ -87,20 +97,30 @@ class Config:
             return user_path
     
     @classmethod
-    def resolve_logs_path(cls) -> Path:
-        """ログフォルダのパスを解決（ポータブル優先）"""
-        portable_path = cls.get_portable_base() / "logs"
+    def _resolve_writable_dir(cls, name: str) -> Path:
+        """書き込み可能なフォルダを解決（ポータブル優先）"""
+        portable_path = cls.get_portable_base() / name
         try:
             portable_path.mkdir(parents=True, exist_ok=True)
             # 書き込みテスト
-            test_file = portable_path / ".write_test"
+            test_file = portable_path / f".write_test_{os.getpid()}"
             test_file.touch()
             test_file.unlink()
             return portable_path
         except (PermissionError, OSError):
-            user_path = cls.get_user_base() / "logs"
+            user_path = cls.get_user_base() / name
             user_path.mkdir(parents=True, exist_ok=True)
             return user_path
+    
+    @classmethod
+    def resolve_logs_path(cls) -> Path:
+        """ログフォルダのパスを解決（ポータブル優先）"""
+        return cls._resolve_writable_dir("logs")
+    
+    @classmethod
+    def resolve_cache_path(cls) -> Path:
+        """キャッシュフォルダのパスを解決（ポータブル優先）"""
+        return cls._resolve_writable_dir("cache")
     
     @classmethod
     def load(cls, config_path: Optional[Path] = None) -> "Config":
@@ -124,7 +144,7 @@ class Config:
                 config.large_file_warning_threshold_mb = int(elem.text or "20")
             
             if (elem := root.find("search_max_matches_per_file")) is not None:
-                config.search_max_matches_per_file = int(elem.text or "50")
+                config.search_max_matches_per_file = int(elem.text or "1000")
             
             if (elem := root.find("logs_max_lines_per_file")) is not None:
                 config.logs_max_lines_per_file = int(elem.text or "1000")
@@ -132,12 +152,32 @@ class Config:
             if (elem := root.find("logging_level")) is not None:
                 config.logging_level = elem.text or "Information"
             
+            def _int(name: str, default: int) -> int:
+                elem = root.find(name)
+                return int(elem.text) if elem is not None and elem.text else default
+            
+            def _text(name: str, default: str) -> str:
+                elem = root.find(name)
+                return elem.text.strip() if elem is not None and elem.text else default
+            
+            config.search_workers = _int("search_workers", config.search_workers)
+            config.cache_max_size_mb = _int("cache_max_size_mb", config.cache_max_size_mb)
+            config.preview_conversion_timeout_sec = _int(
+                "preview_conversion_timeout_sec", config.preview_conversion_timeout_sec
+            )
+            config.preview_max_hits = _int("preview_max_hits", config.preview_max_hits)
+            config.extraction_cache_enabled = (
+                _text("extraction_cache_enabled", "true").lower() == "true"
+            )
+            config.office_converter = _text("office_converter", config.office_converter).lower()
+            config.libreoffice_path = _text("libreoffice_path", config.libreoffice_path)
+            
             # 対象拡張子
             if (ext_elem := root.find("target_extensions")) is not None:
                 extensions = []
                 for ext in ext_elem.findall("ext"):
                     if ext.text:
-                        extensions.append(ext.text.strip().lower())
+                        extensions.append(ext.text.strip().lower().lstrip("."))
                 if extensions:
                     config.target_extensions = extensions
             
@@ -178,6 +218,12 @@ class Config:
         if self._logs_path is None:
             self._logs_path = self.resolve_logs_path()
         return self._logs_path
+    
+    @property
+    def cache_path(self) -> Path:
+        if self._cache_path is None:
+            self._cache_path = self.resolve_cache_path()
+        return self._cache_path
     
     @property
     def large_file_warning_threshold_bytes(self) -> int:

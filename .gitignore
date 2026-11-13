@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+logs/
+cache/
+*.egg-info/
+.pytest_cache/
+uv.lock
+licenses/
+build/
+dist/
+# ライセンスの秘密鍵・発行履歴は絶対にリポジトリに入れない
+*.pem
+issued_licenses.csv
+UnifiedFileSearch_license/

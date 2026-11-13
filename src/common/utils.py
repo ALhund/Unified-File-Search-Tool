@@ -5,7 +5,8 @@
 
 import re
 from typing import Optional
-import chardet
+
+from charset_normalizer import from_bytes
 
 
 def normalize_newlines(text: str) -> str:
@@ -48,12 +49,16 @@ def strip_leading_whitespace_per_line(text: str) -> str:
 
 
 def detect_encoding(data: bytes) -> str:
-    """文字コードを判別する（日本語前提、CP932優先）
+    """文字コードを判別する（日本語前提）
     
-    優先順:
-    1. CP932（Windows-932）
-    2. UTF系（UTF-8/UTF-16等）
-    3. それでも不可ならCP932を返す（文字化け許容）
+    判別順:
+    1. BOM付きUTF
+    2. ASCIIのみ → CP932（表示上の違いはない）
+    3. UTF-8として厳密に正しい → UTF-8
+       （CP932の文章が偶然UTF-8として正しくなることはまずないが、
+         逆にUTF-8の文章はCP932としても「読めてしまう」ことがあるため先に判定する）
+    4. CP932（Windows-932）
+    5. charset-normalizer による推定、それでも不可ならCP932（文字化け許容）
     
     Returns:
         判別された文字コード名
@@ -64,23 +69,24 @@ def detect_encoding(data: bytes) -> str:
     if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
         return "utf-16"
     
-    # CP932でデコードを試みる
-    try:
-        data.decode("cp932")
+    if data.isascii():
         return "cp932"
-    except UnicodeDecodeError:
-        pass
     
-    # UTF-8でデコードを試みる
     try:
         data.decode("utf-8")
         return "utf-8"
     except UnicodeDecodeError:
         pass
     
-    # chardetで自動判別
-    result = chardet.detect(data)
-    detected = result.get("encoding")
+    try:
+        data.decode("cp932")
+        return "cp932"
+    except UnicodeDecodeError:
+        pass
+    
+    # 自動判別（大きなファイルは先頭だけで判定する）
+    best = from_bytes(data[:200_000]).best()
+    detected = best.encoding if best is not None else None
     
     if detected:
         # 日本語エンコーディングの正規化
@@ -89,9 +95,7 @@ def detect_encoding(data: bytes) -> str:
             return "cp932"
         if detected_lower in ("euc-jp", "euc_jp", "eucjp"):
             return "euc-jp"
-        if detected_lower.startswith("utf"):
-            return detected_lower.replace("-", "_")
-        return detected
+        return detected_lower
     
     # 判別不能な場合はCP932（文字化け許容）
     return "cp932"

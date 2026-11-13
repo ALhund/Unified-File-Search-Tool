@@ -28,7 +28,7 @@ class PlainTextExtractor(TextExtractor):
         
         try:
             # バイナリで読み込み
-            data = file_path.read_bytes()
+            data = Path(file_path).read_bytes()
             
             # 文字コード判別とデコード
             text, encoding = decode_with_fallback(data)
@@ -54,7 +54,7 @@ class PlainTextExtractor(TextExtractor):
                         line=line_num,
                     ))
             
-            result.total_pages = 1  # テキストファイルは1ページ扱い
+            result.total_lines = len(lines)
             
             self._logger.debug(
                 "extract",

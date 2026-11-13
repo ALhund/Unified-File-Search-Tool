@@ -1,0 +1,96 @@
+name: Windows 版のビルド
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 依存パッケージのインストール
+        run: |
+          python -m pip install --upgrade pip
+          python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml','rb'))['project']['dependencies']))" > requirements.txt
+          Get-Content requirements.txt
+          python -m pip install -r requirements.txt "pyinstaller>=6.10" pytest
+
+      - name: LibreOffice のインストール（Office ファイルの原本表示の確認用）
+        continue-on-error: true
+        run: |
+          # 配布サーバーが一時的にエラーを返すことがあるので、3回まで試す
+          for ($i = 1; $i -le 3; $i++) {
+            choco install libreoffice-fresh -y --no-progress
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep -Seconds (20 * $i)
+          }
+          if ($LASTEXITCODE -ne 0) { throw "LibreOffice をインストールできませんでした" }
+
+      - name: テスト
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest -q
+
+      - name: 実行ファイルの作成
+        env:
+          # v で始まるタグ（販売用）のときは、ライセンスの公開鍵が無いとビルドを止める
+          UFST_RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '0' }}
+        run: python packaging/build.py
+
+      - name: 実行ファイルの自己診断
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "selftest.json"
+          $p = Start-Process -FilePath "dist\UnifiedFileSearch\UnifiedFileSearch.exe" -ArgumentList "--self-test", "`"$report`"" -PassThru
+          if (-not $p.WaitForExit(300000)) { Stop-Process -Id $p.Id -Force; throw "自己診断が5分以内に終わりませんでした" }
+          Get-Content $report -Encoding utf8
+          if ($p.ExitCode -ne 0) { throw "自己診断に失敗しました（終了コード $($p.ExitCode)）" }
+
+      - name: インストーラーの作成
+        run: |
+          choco install innosetup -y --no-progress
+          $version = python -c "from src import __version__; print(__version__)"
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" packaging\installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "インストーラーの作成に失敗しました" }
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: インストールして自己診断
+        run: |
+          $setup = Get-ChildItem dist\UnifiedFileSearch-*-setup.exe | Select-Object -First 1
+          $p = Start-Process -FilePath $setup.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/NORESTART" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "インストールに失敗しました（終了コード $($p.ExitCode)）" }
+          $exe = Join-Path $env:LOCALAPPDATA "Programs\UnifiedFileSearch\UnifiedFileSearch.exe"
+          if (-not (Test-Path $exe)) { throw "インストール先に実行ファイルがありません: $exe" }
+          $report = Join-Path $env:RUNNER_TEMP "selftest-installed.json"
+          $p = Start-Process -FilePath $exe -ArgumentList "--self-test", "`"$report`"" -PassThru
+          if (-not $p.WaitForExit(300000)) { Stop-Process -Id $p.Id -Force; throw "インストール後の自己診断が5分以内に終わりませんでした" }
+          Get-Content $report -Encoding utf8
+          if ($p.ExitCode -ne 0) { throw "インストール後の自己診断に失敗しました" }
+
+      - name: 成果物のアップロード
+        uses: actions/upload-artifact@v4
+        with:
+          name: UnifiedFileSearch-${{ env.VERSION }}-windows
+          path: |
+            dist/UnifiedFileSearch-*-setup.exe
+            dist/UnifiedFileSearch-*-windows.zip
+          retention-days: 14
+          if-no-files-found: error

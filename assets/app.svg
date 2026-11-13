@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- 地: 紺の角丸四角（グラデーション・光沢なし） -->
+  <rect x="16" y="16" width="224" height="224" rx="40" fill="#1E3A5C"/>
+  <!-- 書類 -->
+  <path d="M62 40h86l42 42v118a10 10 0 0 1-10 10H62a10 10 0 0 1-10-10V50a10 10 0 0 1 10-10z" fill="#FFFFFF"/>
+  <path d="M148 40v32a10 10 0 0 0 10 10h32z" fill="#D5DCE5"/>
+  <!-- 本文の行 -->
+  <rect x="72" y="92" width="60" height="8" rx="2" fill="#B7C1CD"/>
+  <rect x="68" y="112" width="96" height="20" rx="3" fill="#FFC53D"/>
+  <rect x="74" y="118" width="84" height="8" rx="2" fill="#1E3A5C"/>
+  <rect x="72" y="144" width="72" height="8" rx="2" fill="#B7C1CD"/>
+  <rect x="72" y="164" width="44" height="8" rx="2" fill="#B7C1CD"/>
+  <!-- 虫めがね -->
+  <circle cx="170" cy="170" r="36" fill="none" stroke="#1E3A5C" stroke-width="26"/>
+  <circle cx="170" cy="170" r="36" fill="#FFFFFF" stroke="#FFC53D" stroke-width="12"/>
+  <!-- レンズの中: 拡大されたマーカー -->
+  <rect x="146" y="159" width="48" height="22" rx="3" fill="#FFC53D"/>
+  <rect x="152" y="166" width="36" height="8" rx="2" fill="#1E3A5C"/>
+  <path d="M197 197l26 26" stroke="#1E3A5C" stroke-width="30" stroke-linecap="round"/>
+  <path d="M197 197l25 25" stroke="#FFC53D" stroke-width="16" stroke-linecap="round"/>
+</svg>

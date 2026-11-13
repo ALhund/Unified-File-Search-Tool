@@ -1,17 +1,22 @@
 """ウィジェットパッケージ"""
 
-from src.ui.widgets.search_panel import SearchPanel
-from src.ui.widgets.file_list_panel import FileListPanel
+from src.ui.widgets.search_bar import SearchBar
+from src.ui.widgets.results_panel import ResultsPanel
 from src.ui.widgets.preview_panel import PreviewPanel
 from src.ui.widgets.status_bar import StatusBar
 from src.ui.widgets.regex_help_dialog import RegexHelpDialog
-from src.ui.widgets.extension_popup import ExtensionPopup
+from src.ui.widgets.dialogs import AboutDialog, SettingsDialog, ShortcutsDialog
+from src.ui.widgets.license_dialog import LicenseBar, LicenseDialog
 
 __all__ = [
-    "SearchPanel",
-    "FileListPanel",
+    "SearchBar",
+    "ResultsPanel",
     "PreviewPanel",
     "StatusBar",
     "RegexHelpDialog",
-    "ExtensionPopup",
+    "AboutDialog",
+    "SettingsDialog",
+    "ShortcutsDialog",
+    "LicenseBar",
+    "LicenseDialog",
 ]

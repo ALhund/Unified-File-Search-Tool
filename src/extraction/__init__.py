@@ -8,7 +8,7 @@ from src.extraction.office_extractor import (
     PowerPointExtractor,
 )
 from src.extraction.pdf_extractor import PdfExtractor
-from src.extraction.factory import get_extractor
+from src.extraction.factory import get_extractor, extract_file, get_supported_extensions
 
 __all__ = [
     "TextExtractor",
@@ -20,4 +20,6 @@ __all__ = [
     "PowerPointExtractor",
     "PdfExtractor",
     "get_extractor",
+    "extract_file",
+    "get_supported_extensions",
 ]
