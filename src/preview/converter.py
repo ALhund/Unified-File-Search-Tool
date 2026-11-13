@@ -294,10 +294,16 @@ def _convert_with_libreoffice(work_src: Path, out_dir: Path, timeout: int) -> No
 
 def _convert_with_msoffice(work_src: Path, out_pdf: Path, timeout: int) -> None:
     # COMは別プロセスで実行する（タイムアウトで確実に止められ、UIスレッドのCOM状態に影響しない）
-    project_root = Path(__file__).resolve().parents[2]
+    from src.common.paths import app_dir, is_frozen
+    
+    if is_frozen():
+        # 実行ファイルでは自分自身を変換モードで起動する（main.py が受け付ける）
+        command = [sys.executable, "--convert-with-msoffice", str(work_src), str(out_pdf)]
+    else:
+        command = [sys.executable, "-m", "src.preview.msoffice_convert", str(work_src), str(out_pdf)]
     completed = subprocess.run(
-        [sys.executable, "-m", "src.preview.msoffice_convert", str(work_src), str(out_pdf)],
-        cwd=str(project_root),
+        command,
+        cwd=str(app_dir()),
         capture_output=True,
         timeout=timeout,
         creationflags=_hidden_window_flags(),

@@ -1,4 +1,4 @@
-"""Unified File Search Tool - エントリーポイント"""
+"""Unified File Search - エントリーポイント"""
 
 import multiprocessing
 import sys
@@ -16,6 +16,7 @@ def main() -> int:
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
     
+    from src import APP_NAME, __version__
     from src.common.config import get_config
     from src.common.logger import get_logger
     from src.preview.scheme import register_scheme
@@ -31,10 +32,10 @@ def main() -> int:
     )
     
     app = QApplication(sys.argv)
-    app.setApplicationName("Unified File Search")
-    app.setApplicationDisplayName("Unified File Search")
+    app.setApplicationName(APP_NAME)
+    app.setApplicationDisplayName(APP_NAME)
     app.setOrganizationName("UnifiedFileSearchTool")
-    app.setApplicationVersion("0.3.0")
+    app.setApplicationVersion(__version__)
     app.setStyle("Fusion")
     
     from src.ui import icons
@@ -53,7 +54,7 @@ def main() -> int:
     manager.apply(app)
     
     logger = get_logger("main")
-    logger.info("application_starting", "Application starting")
+    logger.info("application_starting", "Application starting", version=__version__)
     
     from src.ui import MainWindow
     
@@ -66,6 +67,19 @@ def main() -> int:
     return exit_code
 
 
+def dispatch(argv: list[str]) -> int:
+    """起動モードの振り分け（実行ファイルから補助的な処理を呼ぶために使う）"""
+    if len(argv) >= 2 and argv[1] == "--convert-with-msoffice":
+        # Microsoft Office での変換（converter.py が別プロセスとして呼ぶ）
+        from src.preview import msoffice_convert
+        return msoffice_convert.main([argv[0]] + argv[2:])
+    if len(argv) >= 2 and argv[1] == "--self-test":
+        from src.selftest import run
+        report = Path(argv[2]) if len(argv) >= 3 else Path("selftest.json")
+        return run(report)
+    return main()
+
+
 if __name__ == "__main__":
     multiprocessing.freeze_support()
-    sys.exit(main())
+    sys.exit(dispatch(sys.argv))

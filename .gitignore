@@ -7,3 +7,5 @@ cache/
 .pytest_cache/
 uv.lock
 licenses/
+build/
+dist/

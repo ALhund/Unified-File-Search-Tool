@@ -27,7 +27,7 @@ from src.ui import icons
 from src.ui.settings import MATCH_LIMIT_CHOICES, UserSettings, limit_label
 from src.ui.widgets.common import label, primary_button
 
-APP_VERSION = "0.3.0"
+from src import __version__ as APP_VERSION
 
 
 def _icon_label(name: str, size: int = 20) -> QLabel:
@@ -316,11 +316,14 @@ class ShortcutsDialog(QDialog):
 
 def _open_third_party_notices() -> None:
     """第三者ライセンスの一覧を開く（配布物では licenses/README.txt、開発時は THIRD_PARTY_NOTICES.md）"""
-    from src.ui.icons import ASSETS_DIR
+    from src.common.paths import app_dir, resource_dir
     from src.ui.platform import open_file
     
-    root = ASSETS_DIR.parent
-    for candidate in (root / "licenses" / "README.txt", root / "THIRD_PARTY_NOTICES.md"):
+    for candidate in (
+        app_dir() / "licenses" / "README.txt",
+        app_dir() / "THIRD_PARTY_NOTICES.md",
+        resource_dir() / "THIRD_PARTY_NOTICES.md",
+    ):
         if candidate.exists():
             open_file(candidate)
             return

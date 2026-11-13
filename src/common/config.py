@@ -64,11 +64,9 @@ class Config:
     @classmethod
     def get_portable_base(cls) -> Path:
         """実行ファイルと同じフォルダを取得"""
-        # 開発時は現在のディレクトリ、exe化時は実行ファイルの場所
-        import sys
-        if getattr(sys, 'frozen', False):
-            return Path(sys.executable).parent
-        return Path.cwd()
+        # 開発時はリポジトリのフォルダ、exe化時は実行ファイルの場所
+        from src.common.paths import app_dir
+        return app_dir()
     
     @classmethod
     def get_user_base(cls) -> Path:

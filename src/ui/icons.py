@@ -16,7 +16,9 @@ from PySide6.QtGui import QIcon, QImage, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QAbstractButton, QApplication
 
-ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
+from src.common.paths import resource_dir
+
+ASSETS_DIR = resource_dir() / "assets"
 
 _STROKE = (
     'fill="none" stroke="{c}" stroke-width="1.7" '
