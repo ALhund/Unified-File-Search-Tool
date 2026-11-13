@@ -27,7 +27,7 @@ def supports_page_mode(extension: str) -> bool:
     """原本表示（ページ表示）が可能な種類か"""
     if extension == "pdf":
         return True
-    return extension in OFFICE_EXTENSIONS and bool(available_backends())
+    return extension in OFFICE_EXTENSIONS and bool(available_backends(extension))
 
 
 def build_preview(

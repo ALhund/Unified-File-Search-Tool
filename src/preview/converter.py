@@ -11,6 +11,7 @@
 """
 
 import hashlib
+from functools import lru_cache
 import os
 import re
 import shutil
@@ -66,25 +67,52 @@ def find_libreoffice() -> Optional[str]:
     return None
 
 
-def has_msoffice_support() -> bool:
-    """COM経由でMicrosoft Officeを呼び出せる環境か（pywin32の有無）"""
+# 拡張子 → Microsoft Office のアプリ（COM の ProgID）
+OFFICE_PROGIDS = {
+    "xlsx": "Excel.Application",
+    "xlsm": "Excel.Application",
+    "docx": "Word.Application",
+    "pptx": "PowerPoint.Application",
+}
+
+
+@lru_cache(maxsize=8)
+def _progid_registered(progid: str) -> bool:
+    """そのOfficeアプリがインストールされているか（COM の登録をレジストリで確認）"""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, rf"{progid}\CLSID"):
+            return True
+    except OSError:
+        return False
+
+
+def has_msoffice_support(extension: Optional[str] = None) -> bool:
+    """Microsoft Office で変換できるか
+    
+    pywin32 があり、該当する Office アプリ（拡張子を省略した場合はいずれか）が
+    インストールされているときだけ True。
+    """
     if sys.platform != "win32":
         return False
     try:
         import win32com.client  # noqa: F401
-        return True
     except ImportError:
         return False
+    if extension is not None:
+        progid = OFFICE_PROGIDS.get(extension.lower().lstrip("."))
+        return progid is not None and _progid_registered(progid)
+    return any(_progid_registered(p) for p in set(OFFICE_PROGIDS.values()))
 
 
-def available_backends() -> list[str]:
-    """利用可能な変換エンジンを優先順に返す"""
+def available_backends(extension: Optional[str] = None) -> list[str]:
+    """利用可能な変換エンジンを優先順に返す（拡張子を渡すとその種類で使えるものだけ）"""
     setting = get_config().office_converter
     if setting == "none":
         return []
     
     backends = []
-    if setting in ("auto", "msoffice") and has_msoffice_support():
+    if setting in ("auto", "msoffice") and has_msoffice_support(extension):
         backends.append("msoffice")
     if setting in ("auto", "libreoffice") and find_libreoffice():
         backends.append("libreoffice")
@@ -117,7 +145,7 @@ def convert_to_pdf(src: Path) -> ConversionResult:
         os.utime(cached)  # 最近使ったものとして扱う
         return ConversionResult(pdf_path=cached, backend="cache")
     
-    backends = available_backends()
+    backends = available_backends(src.suffix)
     if not backends:
         return ConversionResult(error="変換エンジン（Microsoft Office / LibreOffice）が見つかりません")
     

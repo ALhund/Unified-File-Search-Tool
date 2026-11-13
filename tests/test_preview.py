@@ -170,3 +170,25 @@ def test_build_preview_word_and_powerpoint_page_view(sample_dir):
             assert preview.hits
         finally:
             preview.page_document.close()
+
+
+def test_msoffice_requires_installed_office(monkeypatch):
+    """Office が入っていない Windows では Microsoft Office を変換エンジンとして扱わない"""
+    import sys
+    import types
+    
+    from src.preview import converter
+    
+    monkeypatch.setattr(sys, "platform", "win32")
+    fake = types.ModuleType("win32com")
+    fake.client = types.ModuleType("win32com.client")
+    monkeypatch.setitem(sys.modules, "win32com", fake)
+    monkeypatch.setitem(sys.modules, "win32com.client", fake.client)
+    
+    installed = {"Excel.Application"}
+    monkeypatch.setattr(converter, "_progid_registered", lambda progid: progid in installed)
+    assert converter.has_msoffice_support("xlsx")
+    assert not converter.has_msoffice_support("docx")
+    assert converter.has_msoffice_support()
+    installed.clear()
+    assert not converter.has_msoffice_support()
