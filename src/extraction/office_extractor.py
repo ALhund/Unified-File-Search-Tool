@@ -47,14 +47,18 @@ class WordExtractor(TextExtractor):
             def add_table(table: Table) -> None:
                 table_index = counter["table"]
                 counter["table"] += 1
-                seen = set()
+                # 結合セルは同じセルが繰り返し返るので1回だけ扱う。
+                # （id() はオブジェクト解放後に再利用されるため、要素そのものを保持して比較する）
+                seen: list = []
                 for r, row in enumerate(table.rows):
                     for c, cell in enumerate(row.cells):
-                        # 結合セルは同じセルが繰り返し返るので1回だけ扱う
-                        if id(cell._tc) in seen:
+                        if any(cell._tc is element for element in seen):
                             continue
-                        seen.add(id(cell._tc))
+                        seen.append(cell._tc)
                         add(cell.text, table=(table_index, r, c))
+                        for para in cell.paragraphs:
+                            for text in _textbox_texts(para):
+                                add(text, kind="shape")
             
             for section in doc.sections:
                 if not section.header.is_linked_to_previous:
@@ -200,6 +204,27 @@ def _cell_text(value) -> str:
     return str(value).strip()
 
 
+def _chart_text(chart) -> str:
+    """グラフのタイトル・系列名・項目名"""
+    lines: list[str] = []
+    try:
+        if chart.has_title and chart.chart_title.has_text_frame:
+            lines.append(chart.chart_title.text_frame.text.strip())
+    except Exception:
+        pass
+    try:
+        for plot in chart.plots:
+            lines.extend(str(c) for c in plot.categories if str(c).strip())
+            lines.extend(series.name for series in plot.series if series.name)
+    except Exception:
+        pass
+    unique: list[str] = []
+    for line in lines:
+        if line and line not in unique:
+            unique.append(line)
+    return "\n".join(unique)
+
+
 class PowerPointExtractor(TextExtractor):
     """PowerPoint（.pptx）からテキストを抽出"""
     
@@ -269,6 +294,12 @@ class PowerPointExtractor(TextExtractor):
                                 slide=slide_num,
                                 table=(table_index, r, c),
                             ))
+                continue
+            
+            if getattr(shape, "has_chart", False) and shape.has_chart:
+                text = _chart_text(shape.chart)
+                if text:
+                    result.blocks.append(ContentBlock(text=text, slide=slide_num, kind="chart"))
                 continue
             
             if shape.has_text_frame:

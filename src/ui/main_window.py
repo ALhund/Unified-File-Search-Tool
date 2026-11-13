@@ -599,8 +599,10 @@ class MainWindow(QMainWindow):
             if preview.page_document is not None:
                 preview.page_document.close()
             return
-        self._preview.set_has_query(self._current_entry.result is not None)
-        self._preview.set_preview(self._current_entry.file_info, preview)
+        result = self._current_entry.result
+        self._preview.set_has_query(result is not None)
+        expected = result.match_count if result is not None and not result.truncated else None
+        self._preview.set_preview(self._current_entry.file_info, preview, expected_hits=expected)
     
     # ------------------------------------------------------------------
     # 終了

@@ -4,12 +4,9 @@
 """
 
 import re
-import threading
 from typing import Optional
-import chardet
 
-# PyMuPDF はスレッドセーフではないため、同一プロセス内の呼び出しはこのロックで直列化する
-FITZ_LOCK = threading.RLock()
+from charset_normalizer import from_bytes
 
 
 def normalize_newlines(text: str) -> str:
@@ -61,7 +58,7 @@ def detect_encoding(data: bytes) -> str:
        （CP932の文章が偶然UTF-8として正しくなることはまずないが、
          逆にUTF-8の文章はCP932としても「読めてしまう」ことがあるため先に判定する）
     4. CP932（Windows-932）
-    5. chardetによる推定、それでも不可ならCP932（文字化け許容）
+    5. charset-normalizer による推定、それでも不可ならCP932（文字化け許容）
     
     Returns:
         判別された文字コード名
@@ -87,9 +84,9 @@ def detect_encoding(data: bytes) -> str:
     except UnicodeDecodeError:
         pass
     
-    # chardetで自動判別（大きなファイルは先頭だけで判定する）
-    result = chardet.detect(data[:200_000])
-    detected = result.get("encoding")
+    # 自動判別（大きなファイルは先頭だけで判定する）
+    best = from_bytes(data[:200_000]).best()
+    detected = best.encoding if best is not None else None
     
     if detected:
         # 日本語エンコーディングの正規化

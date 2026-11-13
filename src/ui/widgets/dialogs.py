@@ -314,6 +314,18 @@ class ShortcutsDialog(QDialog):
         layout.addLayout(row)
 
 
+def _open_third_party_notices() -> None:
+    """第三者ライセンスの一覧を開く（配布物では licenses/README.txt、開発時は THIRD_PARTY_NOTICES.md）"""
+    from src.ui.icons import ASSETS_DIR
+    from src.ui.platform import open_file
+    
+    root = ASSETS_DIR.parent
+    for candidate in (root / "licenses" / "README.txt", root / "THIRD_PARTY_NOTICES.md"):
+        if candidate.exists():
+            open_file(candidate)
+            return
+
+
 class AboutDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -345,6 +357,15 @@ class AboutDialog(QDialog):
         )
         description.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(description)
+        notices = QPushButton("第三者ソフトウェアのライセンス")
+        notices.setObjectName("Ghost")
+        notices.setCursor(Qt.CursorShape.PointingHandCursor)
+        notices.clicked.connect(_open_third_party_notices)
+        notice_row = QHBoxLayout()
+        notice_row.addStretch(1)
+        notice_row.addWidget(notices)
+        notice_row.addStretch(1)
+        layout.addLayout(notice_row)
         close = primary_button("閉じる")
         close.clicked.connect(self.accept)
         row = QHBoxLayout()

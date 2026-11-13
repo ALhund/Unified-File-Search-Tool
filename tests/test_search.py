@@ -209,3 +209,47 @@ def test_search_files_respects_explicit_limit(sample_dir):
     by_name = {r.file_info.name: r for r in results}
     assert by_name["sample.xlsx"].match_count == 1 and by_name["sample.xlsx"].truncated
     assert by_name["sample.xlsx"].display_count == "1+"
+
+
+def test_word_table_keeps_every_cell(tmp_path):
+    """結合セルの重複除去で、別のセルを読み飛ばさないこと（id() 再利用の回帰テスト）"""
+    from docx import Document
+    
+    document = Document()
+    table = document.add_table(rows=4, cols=3)
+    for r in range(4):
+        for c in range(3):
+            table.cell(r, c).text = f"セル{r}{c}"
+    merged = document.add_table(rows=2, cols=2)
+    merged.cell(0, 0).merge(merged.cell(0, 1)).text = "結合"
+    merged.cell(1, 0).text = "下左"
+    merged.cell(1, 1).text = "下右"
+    path = tmp_path / "table.docx"
+    document.save(path)
+    
+    texts = [b.text for b in extract_file(str(path)).blocks]
+    assert [t for t in texts if t.startswith("セル")] == [f"セル{r}{c}" for r in range(4) for c in range(3)]
+    assert texts.count("結合") == 1 and "下左" in texts and "下右" in texts
+
+
+def test_powerpoint_chart_text_is_searchable(tmp_path):
+    from pptx import Presentation
+    from pptx.chart.data import CategoryChartData
+    from pptx.enum.chart import XL_CHART_TYPE
+    from pptx.util import Inches
+    
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    data = CategoryChartData()
+    data.categories = ["4月", "5月"]
+    data.add_series("出荷数", (1, 2))
+    chart = slide.shapes.add_chart(
+        XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(1), Inches(1), Inches(4), Inches(3), data
+    ).chart
+    chart.has_title = True
+    chart.chart_title.text_frame.text = "バナナ月別出荷"
+    path = tmp_path / "chart.pptx"
+    presentation.save(path)
+    
+    block = next(b for b in extract_file(str(path)).blocks if b.kind == "chart")
+    assert "バナナ月別出荷" in block.text and "出荷数" in block.text and "4月" in block.text

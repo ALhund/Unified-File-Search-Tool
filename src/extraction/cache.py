@@ -16,7 +16,7 @@ from typing import Optional
 from src.extraction.base import ExtractedContent
 
 # 抽出ロジックを変更したら上げる（古いキャッシュを無効化する）
-EXTRACTOR_VERSION = 2
+EXTRACTOR_VERSION = 3
 
 
 class ExtractionCache:

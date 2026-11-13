@@ -117,22 +117,58 @@ def make_pptx(path: Path) -> Path:
     return path
 
 
-def make_pdf(path: Path) -> Path:
-    """2ページのPDF（1ページ目は語が行をまたぐ）"""
-    import pymupdf
+def write_pdf(path: Path, pages: list[list[tuple[float, float, float, str]]]) -> Path:
+    """最小限のPDFを書き出す（テスト用。各ページは (x, 上からのy, 文字サイズ, 文字列) の並び）"""
+    width, height = 612, 792
+    objects: list[bytes] = []
     
-    document = pymupdf.open()
-    page = document.new_page()
-    page.insert_textbox(
-        pymupdf.Rect(72, 72, 300, 200),
-        "Hello banana world.\nThe quick brown fox jumps over the lazy dog and eats a banana.",
-        fontsize=12,
-    )
-    page = document.new_page()
-    page.insert_text((72, 100), "Second page BANANA", fontsize=14)
-    document.save(path)
-    document.close()
+    def add(body: bytes) -> int:
+        objects.append(body)
+        return len(objects)
+    
+    catalog = add(b"")  # 後で埋める
+    pages_obj = add(b"")
+    font = add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>")
+    page_ids = []
+    for items in pages:
+        stream = b"".join(
+            b"BT /F1 %.1f Tf %.1f %.1f Td (%s) Tj ET\n"
+            % (size, x, height - y - size, text.encode("latin-1"))
+            for x, y, size, text in items
+        )
+        content = add(b"<< /Length %d >>\nstream\n%s\nendstream" % (len(stream), stream))
+        page_ids.append(add(
+            b"<< /Type /Page /Parent %d 0 R /MediaBox [0 0 %d %d] "
+            b"/Resources << /Font << /F1 %d 0 R >> >> /Contents %d 0 R >>"
+            % (pages_obj, width, height, font, content)
+        ))
+    objects[catalog - 1] = b"<< /Type /Catalog /Pages %d 0 R >>" % pages_obj
+    objects[pages_obj - 1] = b"<< /Type /Pages /Kids [%s] /Count %d >>" % (
+        b" ".join(b"%d 0 R" % i for i in page_ids), len(page_ids))
+    
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n%s\nendobj\n" % (number, body)
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
+    out += b"".join(b"%010d 00000 n \n" % o for o in offsets)
+    out += b"trailer\n<< /Size %d /Root %d 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, catalog, xref)
+    path.write_bytes(bytes(out))
     return path
+
+
+def make_pdf(path: Path) -> Path:
+    """2ページのPDF（1ページ目は語句が行をまたぐ段落）"""
+    return write_pdf(path, [
+        [
+            (72, 72, 12, "Hello banana world."),
+            (72, 86, 12, "The quick brown fox jumps over the"),
+            (72, 100, 12, "lazy dog and eats a banana."),
+        ],
+        [(72, 100, 14, "Second page BANANA")],
+    ])
 
 
 @pytest.fixture

@@ -248,4 +248,18 @@ uv run --with pillow python tools/build_icons.py
 
 ## ライセンス
 
-MIT License
+本ソフトウェアの著作権は作者に帰属します。無断での再配布・再販売を禁じます。
+
+利用しているオープンソース ソフトウェアとそのライセンスは [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) を参照してください。
+販売・配布するパッケージには、`tools/collect_licenses.py` で集めたライセンス全文（`licenses/`）を同梱します。
+アプリの「ヘルプ → バージョン情報 → 第三者ソフトウェアのライセンス」からも確認できます。
+
+販売を前提に、ライセンス上の制約がある部品は次のように置き換えています。
+
+| 以前 | 現在 | 理由 |
+| --- | --- | --- |
+| PyMuPDF（AGPL-3.0） | pypdfium2 / PDFium（Apache-2.0・BSD-3-Clause） | AGPL の部品を組み込んで販売すると、アプリ全体のソースコード公開が必要になるため |
+| chardet（LGPL-2.1） | charset-normalizer（MIT） | 制約の少ないライセンスに統一するため |
+
+画面に使っている Qt for Python（PySide6）は LGPL-3.0 です。販売してかまいませんが、
+配布の際は THIRD_PARTY_NOTICES.md の「LGPL（Qt for Python）について」の条件を守ってください。

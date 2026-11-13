@@ -116,24 +116,25 @@ class MetadataReader:
     
     def _read_pdf(self, file_path: Path) -> FileMetadata:
         """PDFファイルのメタデータを読み取る"""
-        import pymupdf as fitz
+        from src.common.pdf_layout import PDFIUM_LOCK, open_document
         
-        doc = fitz.open(file_path)
-        meta = doc.metadata
+        with PDFIUM_LOCK:
+            doc = open_document(file_path)
+            try:
+                meta = doc.get_metadata_dict(skip_empty=True)
+            finally:
+                doc.close()
         
         metadata = FileMetadata()
-        
         if meta:
-            metadata.author = meta.get("author")
-            metadata.title = meta.get("title")
+            metadata.author = meta.get("Author")
+            metadata.title = meta.get("Title")
             
             # 日付のパース（PDF形式: D:YYYYMMDDHHmmSS）
-            if creation_date := meta.get("creationDate"):
+            if creation_date := meta.get("CreationDate"):
                 metadata.created = self._parse_pdf_date(creation_date)
-            if mod_date := meta.get("modDate"):
+            if mod_date := meta.get("ModDate"):
                 metadata.modified = self._parse_pdf_date(mod_date)
-        
-        doc.close()
         return metadata
     
     def _parse_pdf_date(self, date_str: str) -> Optional[datetime]:

@@ -66,7 +66,6 @@ class PreviewPanel(QWidget):
         self._doc_id: Optional[str] = None
         self._mode = "text"
         self._file: Optional[FileInfo] = None
-        self._filtered_widgets: set[int] = set()
         
         self._store = PreviewStore()
         self._setup_ui()
@@ -289,8 +288,17 @@ class PreviewPanel(QWidget):
         self._path.setText(str(file_info.path.parent))
         self._file_icon.setPixmap(icons.file_pixmap(file_info.extension, 32))
     
-    def set_preview(self, file_info: FileInfo, preview: RenderedPreview, start_hit: int = 0) -> None:
-        """生成済みのプレビューを表示する"""
+    def set_preview(
+        self,
+        file_info: FileInfo,
+        preview: RenderedPreview,
+        start_hit: int = 0,
+        expected_hits: Optional[int] = None,
+    ) -> None:
+        """生成済みのプレビューを表示する
+        
+        expected_hits: 検索結果の件数（原本表示で見つかった数が少ない場合に案内する）
+        """
         self._set_header(file_info)
         doc_id = self._store.new_id()
         self._store.put(doc_id, preview.html, preview.page_document)
@@ -317,6 +325,14 @@ class PreviewPanel(QWidget):
             notes.append(
                 "この表示ではヒット箇所が見つかりませんでした。非表示のシートやノートなどにある場合は「テキスト」表示で確認できます。"
                 if preview.mode == "page" else "ヒット箇所はありません。"
+            )
+        elif (
+            preview.mode == "page" and expected_hits and not preview.truncated
+            and 0 < len(self._hits) < expected_hits
+        ):
+            notes.append(
+                f"検索結果は {expected_hits:,} 件ですが、原本の表示上で見つかったのは {len(self._hits):,} 件です。"
+                "残りはノート・非表示のシートなど画面に表示されない場所にある可能性があります（「テキスト」表示で確認できます）。"
             )
         self._info_bar.show_message(" ".join(notes))
         self._footer.setText(preview.info)
@@ -398,9 +414,9 @@ class PreviewPanel(QWidget):
     def _install_wheel_filter(self) -> None:
         """Ctrl+ホイールでのズームを、このパネルのズーム操作として扱う"""
         proxy = self._web_view.focusProxy()
-        if proxy is not None and id(proxy) not in self._filtered_widgets:
+        if proxy is not None and not proxy.property("ufst_wheel_filter"):
             proxy.installEventFilter(self)
-            self._filtered_widgets.add(id(proxy))
+            proxy.setProperty("ufst_wheel_filter", True)
     
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
         if event.type() == QEvent.Type.Wheel and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
