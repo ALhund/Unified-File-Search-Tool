@@ -36,7 +36,14 @@ jobs:
 
       - name: LibreOffice のインストール（Office ファイルの原本表示の確認用）
         continue-on-error: true
-        run: choco install libreoffice-fresh -y --no-progress
+        run: |
+          # 配布サーバーが一時的にエラーを返すことがあるので、3回まで試す
+          for ($i = 1; $i -le 3; $i++) {
+            choco install libreoffice-fresh -y --no-progress
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep -Seconds (20 * $i)
+          }
+          if ($LASTEXITCODE -ne 0) { throw "LibreOffice をインストールできませんでした" }
 
       - name: テスト
         env:
